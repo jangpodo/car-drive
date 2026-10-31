@@ -63,33 +63,80 @@ def reconstruct_path(
     return list(reversed(path))
 
 
+def _all_open_cells_connected(grid: np.ndarray) -> bool:
+    """장애물이 아닌 모든 칸이 상하좌우로 연결되어 있는지 확인한다."""
+    open_cells = np.argwhere(~grid)
+    if len(open_cells) == 0:
+        return False
+
+    first = tuple(map(int, open_cells[0]))
+    visited = {first}
+    queue = deque([first])
+    rows, cols = grid.shape
+
+    while queue:
+        current = queue.popleft()
+        for nxt in neighbors(current, rows, cols):
+            if not grid[nxt] and nxt not in visited:
+                visited.add(nxt)
+                queue.append(nxt)
+
+    return len(visited) == len(open_cells)
+
+
 def generate_maze(
     rows: int,
     cols: int,
     start: Position | None = None,
     goal: Position | None = None,
 ) -> np.ndarray:
-    """장애물 밀도를 높이고, 벽과 통로가 섞인 미로형 지도를 생성한다."""
+    """장애물을 듬성듬성 배치하고 모든 빈 칸이 연결된 미로를 생성한다."""
     rng = np.random.default_rng()
-    grid = rng.random((rows, cols)) < 0.27
+    obstacle_ratio = 0.12  # 기존 27%에서 12%로 감소
 
-    # 일정 간격으로 가로/세로 벽을 만들고 중간중간 통로를 남긴다.
-    # 벽 간격과 통로 위치는 매번 무작위로 달라진다.
-    for r in range(2, rows - 1, int(rng.integers(3, 6))):
-        grid[r, :] = True
-        openings = rng.choice(cols, size=max(1, cols // 7), replace=False)
-        grid[r, openings] = False
+    # 연결된 통로가 만들어질 때까지 새 지도를 생성한다.
+    for _ in range(100):
+        grid = rng.random((rows, cols)) < obstacle_ratio
 
-    for c in range(2, cols - 1, int(rng.integers(3, 6))):
-        grid[:, c] = True
-        openings = rng.choice(rows, size=max(1, rows // 7), replace=False)
-        grid[openings, c] = False
+        # 긴 벽 대신 짧은 가로/세로 장애물 조각을 드문드문 추가한다.
+        segment_count = max(2, (rows * cols) // 140)
+        for _ in range(segment_count):
+            horizontal = bool(rng.integers(0, 2))
+            length = int(rng.integers(2, 5))
 
-    # 출발점과 목적지는 장애물로 덮이지 않도록 비워 둔다.
+            if horizontal:
+                r = int(rng.integers(0, rows))
+                c = int(rng.integers(0, max(1, cols - length + 1)))
+                grid[r, c:min(cols, c + length)] = True
+            else:
+                r = int(rng.integers(0, max(1, rows - length + 1)))
+                c = int(rng.integers(0, cols))
+                grid[r:min(rows, r + length), c] = True
+
+        # 출발점과 목적지는 항상 통과할 수 있도록 비워 둔다.
+        if start is not None and valid_position(start, rows, cols):
+            grid[start] = False
+        if goal is not None and valid_position(goal, rows, cols):
+            grid[goal] = False
+
+        # 모든 빈 칸이 연결되어 있으면 어떤 위치에서도 길을 찾을 수 있다.
+        if _all_open_cells_connected(grid):
+            return grid
+
+    # 드물게 연결된 지도가 만들어지지 않으면 안전하게 성긴 장애물만 사용한다.
+    grid = rng.random((rows, cols)) < 0.08
     if start is not None and valid_position(start, rows, cols):
         grid[start] = False
     if goal is not None and valid_position(goal, rows, cols):
         grid[goal] = False
+
+    # 마지막 안전장치: 모든 빈 칸의 연결을 보장한다.
+    while not _all_open_cells_connected(grid):
+        obstacle_cells = np.argwhere(grid)
+        if len(obstacle_cells) == 0:
+            break
+        r, c = map(int, obstacle_cells[rng.integers(len(obstacle_cells))])
+        grid[r, c] = False
 
     return grid
 
@@ -299,20 +346,28 @@ def main() -> None:
         action = event.get("action")
 
         try:
-            if action == "obstacle_area":
+            if action in ("obstacle_area", "erase_area"):
                 r1, c1 = map(int, event["start_cell"].split(","))
                 r2, c2 = map(int, event["end_cell"].split(","))
                 min_r, max_r = sorted((r1, r2))
                 min_c, max_c = sorted((c1, c2))
 
-                # 드래그한 시작 칸과 끝 칸 사이의 직사각형 전체를 장애물로 지정
+                # 드래그한 직사각형 전체에 장애물을 설치하거나 삭제한다.
                 for r in range(min_r, max_r + 1):
                     for c in range(min_c, max_c + 1):
                         pos = (r, c)
-                        if valid_position(pos, rows, cols) and pos not in (
-                            st.session_state.start, st.session_state.goal
-                        ):
-                            st.session_state.grid[pos] = True
+                        if not valid_position(pos, rows, cols):
+                            continue
+
+                        if action == "obstacle_area":
+                            if pos not in (st.session_state.start, st.session_state.goal):
+                                st.session_state.grid[pos] = True
+                        else:
+                            st.session_state.grid[pos] = False
+                            if st.session_state.start == pos:
+                                st.session_state.start = None
+                            if st.session_state.goal == pos:
+                                st.session_state.goal = None
             else:
                 cell = event.get("cell", "")
                 r, c = map(int, cell.split(","))
@@ -343,7 +398,7 @@ def main() -> None:
 
     st.markdown(
         "**사용 방법:** 도구 선택 → 지도 칸에 마우스 올리기 → **F** 키. "
-        "장애물은 마우스 버튼을 누른 채 드래그해 여러 칸을 한 번에 지정할 수 있습니다."
+        "장애물 설치와 블럭 삭제는 마우스를 누른 채 드래그해 사각형 영역 전체에 적용할 수 있습니다."
     )
     st.caption("초록색 S = 출발점 · 빨간색 G = 종착점 · 짙은 회색 = 장애물")
 

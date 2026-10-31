@@ -1,3 +1,323 @@
+"""자율주행 로봇 경로 탐색기
+실행: streamlit run main.py
+"""
+
+from __future__ import annotations
+
+import heapq
+import time
+from collections import deque
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Set, Tuple
+
+import numpy as np
+import plotly.graph_objects as go
+import streamlit as st
+import streamlit.components.v1 as components
+
+Position = Tuple[int, int]
+
+# 마우스/터치 드래그와 F 키를 지원하는 지도 편집기
+map_editor = components.declare_component(
+    "robot_map_editor",
+    path=str(Path(__file__).parent / "map_editor"),
+)
+
+
+@dataclass
+class SearchResult:
+    algorithm: str
+    path: List[Position]
+    visited: Set[Position]
+    found: bool
+    elapsed_ms: float
+    message: str
+
+
+def valid_position(pos: Position, rows: int, cols: int) -> bool:
+    return 0 <= pos[0] < rows and 0 <= pos[1] < cols
+
+
+def neighbors(pos: Position, rows: int, cols: int) -> List[Position]:
+    r, c = pos
+    candidates = [(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)]
+    return [p for p in candidates if valid_position(p, rows, cols)]
+
+
+def manhattan(a: Position, b: Position) -> int:
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+def reconstruct_path(
+    parent: Dict[Position, Position], start: Position, goal: Position
+) -> List[Position]:
+    if start == goal:
+        return [start]
+    if goal not in parent:
+        return []
+
+    path = [goal]
+    while path[-1] != start:
+        path.append(parent[path[-1]])
+    return list(reversed(path))
+
+
+def generate_maze(
+    rows: int,
+    cols: int,
+    start: Position | None = None,
+    goal: Position | None = None,
+) -> np.ndarray:
+    """장애물 밀도를 높이고, 벽과 통로가 섞인 미로형 지도를 생성한다."""
+    rng = np.random.default_rng()
+    grid = rng.random((rows, cols)) < 0.27
+
+    # 일정 간격으로 가로/세로 벽을 만들고 중간중간 통로를 남긴다.
+    # 벽 간격과 통로 위치는 매번 무작위로 달라진다.
+    for r in range(2, rows - 1, int(rng.integers(3, 6))):
+        grid[r, :] = True
+        openings = rng.choice(cols, size=max(1, cols // 7), replace=False)
+        grid[r, openings] = False
+
+    for c in range(2, cols - 1, int(rng.integers(3, 6))):
+        grid[:, c] = True
+        openings = rng.choice(rows, size=max(1, rows // 7), replace=False)
+        grid[openings, c] = False
+
+    # 출발점과 목적지는 장애물로 덮이지 않도록 비워 둔다.
+    if start is not None and valid_position(start, rows, cols):
+        grid[start] = False
+    if goal is not None and valid_position(goal, rows, cols):
+        grid[goal] = False
+
+    return grid
+
+
+def search(
+    grid: np.ndarray, start: Position, goal: Position, algorithm: str
+) -> SearchResult:
+    began = time.perf_counter()
+    rows, cols = grid.shape
+
+    if grid[start] or grid[goal]:
+        return SearchResult(
+            algorithm, [], set(), False, 0.0,
+            "출발점 또는 목적지에 장애물이 있습니다.",
+        )
+
+    parent: Dict[Position, Position] = {}
+    visited: Set[Position] = {start}
+    found = False
+
+    if algorithm == "BFS":
+        queue = deque([start])
+        while queue:
+            current = queue.popleft()
+            if current == goal:
+                found = True
+                break
+            for nxt in neighbors(current, rows, cols):
+                if nxt not in visited and not grid[nxt]:
+                    visited.add(nxt)
+                    parent[nxt] = current
+                    queue.append(nxt)
+    else:  # A* 알고리즘
+        queue = [(manhattan(start, goal), 0, start)]
+        g_score = {start: 0}
+        closed: Set[Position] = set()
+
+        while queue:
+            _, current_g, current = heapq.heappop(queue)
+            if current in closed or current_g != g_score.get(current, float("inf")):
+                continue
+            if current == goal:
+                found = True
+                break
+
+            closed.add(current)
+            for nxt in neighbors(current, rows, cols):
+                if grid[nxt] or nxt in closed:
+                    continue
+                new_g = current_g + 1
+                if new_g < g_score.get(nxt, float("inf")):
+                    g_score[nxt] = new_g
+                    parent[nxt] = current
+                    heapq.heappush(
+                        queue, (new_g + manhattan(nxt, goal), new_g, nxt)
+                    )
+
+        visited = closed | ({goal} if found else set())
+
+    path = reconstruct_path(parent, start, goal) if found else []
+    elapsed = (time.perf_counter() - began) * 1000
+    return SearchResult(
+        algorithm,
+        path,
+        visited,
+        bool(path),
+        elapsed,
+        "경로를 찾았습니다." if path else "목적지까지 경로가 없습니다.",
+    )
+
+
+def draw_result(
+    grid: np.ndarray,
+    start: Position,
+    goal: Position,
+    result: SearchResult,
+    robot: Position | None = None,
+) -> go.Figure:
+    rows, cols = grid.shape
+    z = np.zeros((rows, cols), dtype=int)
+    z[grid] = 1
+
+    for p in result.visited:
+        if not grid[p]:
+            z[p] = 2
+    for p in result.path:
+        if not grid[p]:
+            z[p] = 3
+
+    fig = go.Figure(
+        go.Heatmap(
+            z=z,
+            colorscale=[
+                [0.00, "#F8FAFC"], [0.24, "#F8FAFC"],
+                [0.25, "#374151"], [0.49, "#374151"],
+                [0.50, "#FDE68A"], [0.74, "#FDE68A"],
+                [0.75, "#60A5FA"], [1.00, "#60A5FA"],
+            ],
+            zmin=0,
+            zmax=3,
+            showscale=False,
+            xgap=2,
+            ygap=2,
+            hovertemplate="행 %{y}, 열 %{x}<extra></extra>",
+        )
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=[start[1], goal[1]],
+            y=[start[0], goal[0]],
+            mode="markers+text",
+            marker=dict(size=18, color=["#16A34A", "#DC2626"]),
+            text=["S", "G"],
+            textposition="middle center",
+            textfont=dict(color="white"),
+            name="출발점 / 목적지",
+        )
+    )
+
+    if robot is not None:
+        fig.add_trace(
+            go.Scatter(
+                x=[robot[1]],
+                y=[robot[0]],
+                mode="markers+text",
+                marker=dict(size=20, color="#7C3AED", symbol="diamond"),
+                text=["🚗"],
+                textposition="top center",
+                name="로봇",
+            )
+        )
+
+    fig.update_layout(
+        height=min(850, max(350, rows * max(9, min(22, 650 // max(rows, cols))) + 80)),
+        margin=dict(l=10, r=10, t=20, b=10),
+    )
+    fig.update_yaxes(autorange="reversed", scaleanchor="x")
+    fig.update_xaxes(title="열")
+    return fig
+
+
+def main() -> None:
+    st.set_page_config(
+        page_title="자율주행 로봇 경로 탐색기",
+        page_icon="🤖",
+        layout="wide",
+    )
+    st.title("🤖 자율주행 로봇 경로 탐색기")
+    st.caption(
+        "도구를 선택하고 지도 칸에 마우스를 올린 뒤 F 키를 누르세요. "
+        "장애물 도구에서는 마우스를 누른 채 드래그해 직사각형 영역을 만들 수 있습니다."
+    )
+
+    with st.sidebar:
+        st.header("지도 설정")
+        rows = int(st.number_input("행 수", 5, 60, 20, 1))
+        cols = int(st.number_input("열 수", 5, 60, 20, 1))
+        algorithm = st.selectbox("탐색 알고리즘", ["A*", "BFS", "두 알고리즘 비교"])
+
+    shape = (rows, cols)
+    if st.session_state.get("grid_shape") != shape:
+        st.session_state.grid = np.zeros(shape, dtype=bool)
+        st.session_state.start = None
+        st.session_state.goal = None
+        st.session_state.grid_shape = shape
+        st.session_state.result_a = None
+        st.session_state.result_b = None
+
+    if "grid" not in st.session_state:
+        st.session_state.grid = np.zeros(shape, dtype=bool)
+    if "start" not in st.session_state:
+        st.session_state.start = None
+    if "goal" not in st.session_state:
+        st.session_state.goal = None
+
+    left, _ = st.columns([5, 1])
+    with left:
+        st.subheader(f"지도 ({rows} × {cols})")
+        obstacles = [
+            f"{r},{c}"
+            for r in range(rows)
+            for c in range(cols)
+            if st.session_state.grid[r, c]
+        ]
+        event = map_editor(
+            rows=rows,
+            cols=cols,
+            obstacles=obstacles,
+            start=(
+                f"{st.session_state.start[0]},{st.session_state.start[1]}"
+                if st.session_state.start else None
+            ),
+            goal=(
+                f"{st.session_state.goal[0]},{st.session_state.goal[1]}"
+                if st.session_state.goal else None
+            ),
+            key="robot_map",
+        )
+
+    # 지도 편집기에서 전달된 이벤트는 nonce를 이용해 한 번만 처리한다.
+    if (
+        isinstance(event, dict)
+        and event.get("nonce") != st.session_state.get("last_event_nonce")
+    ):
+        st.session_state.last_event_nonce = event.get("nonce")
+        action = event.get("action")
+
+        try:
+            if action == "obstacle_area":
+                r1, c1 = map(int, event["start_cell"].split(","))
+                r2, c2 = map(int, event["end_cell"].split(","))
+                min_r, max_r = sorted((r1, r2))
+                min_c, max_c = sorted((c1, c2))
+
+                # 드래그한 시작 칸과 끝 칸 사이의 직사각형 전체를 장애물로 지정
+                for r in range(min_r, max_r + 1):
+                    for c in range(min_c, max_c + 1):
+                        pos = (r, c)
+                        if valid_position(pos, rows, cols) and pos not in (
+                            st.session_state.start, st.session_state.goal
+                        ):
+                            st.session_state.grid[pos] = True
+            else:
+                cell = event.get("cell", "")
+                r, c = map(int, cell.split(","))
+                pos = (r, c)
+
                 if valid_position(pos, rows, cols):
                     if action == "start":
                         st.session_state.start = pos

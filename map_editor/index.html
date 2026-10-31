@@ -1,382 +1,224 @@
-
 <!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-
 <style>
-  * {
-    box-sizing: border-box;
-  }
-
-  body {
-    margin: 0;
-    font-family: Arial, sans-serif;
-    color: #1f2937;
-  }
-
-  #wrap {
-    display: flex;
-    gap: 16px;
-    align-items: flex-start;
-    width: 100%;
-  }
-
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: Arial, sans-serif; color: #1f2937; }
+  #wrap { display: flex; gap: 16px; align-items: flex-start; width: 100%; }
   #board {
-    flex: 1;
-    min-width: 0;
-    display: grid;
-    gap: 2px;
-    background: #d1d5db;
-    padding: 3px;
-    border-radius: 8px;
+    flex: 1; min-width: 0; display: grid; gap: 2px;
+    background: #d1d5db; padding: 3px; border-radius: 8px;
+    touch-action: none;
   }
-
   .cell {
-    min-width: 0;
-    aspect-ratio: 1;
-    background: #fff;
-    border: 1px solid #e5e7eb;
-    border-radius: 2px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: clamp(8px, 1.5vw, 18px);
-    cursor: crosshair;
-    user-select: none;
+    min-width: 0; aspect-ratio: 1; background: #fff;
+    border: 1px solid #e5e7eb; border-radius: 2px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: clamp(8px, 1.5vw, 18px); cursor: crosshair;
+    user-select: none; touch-action: none;
   }
-
-  .cell.obstacle {
-    background: #374151;
-  }
-
-  .cell.start {
-    background: #16a34a;
-    color: white;
-    font-weight: bold;
-  }
-
-  .cell.goal {
-    background: #dc2626;
-    color: white;
-    font-weight: bold;
-  }
-
-  .cell.preview {
-    outline: 2px solid #7c3aed;
-    outline-offset: -2px;
-  }
-
+  .cell.obstacle { background: #374151; }
+  .cell.start { background: #16a34a; color: white; font-weight: bold; }
+  .cell.goal { background: #dc2626; color: white; font-weight: bold; }
+  .cell.preview { outline: 2px solid #7c3aed; outline-offset: -2px; }
+  .cell.drag-preview { background: #9ca3af; outline: 2px solid #7c3aed; }
   #tools {
-    width: 145px;
-    flex-shrink: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+    width: 145px; flex-shrink: 0; display: flex;
+    flex-direction: column; gap: 8px;
   }
-
   .tool {
-    padding: 11px 8px;
-    border: 1px solid #cbd5e1;
-    border-radius: 8px;
-    background: #fff;
-    cursor: pointer;
-    font-size: 14px;
-    text-align: center;
+    padding: 11px 8px; border: 1px solid #cbd5e1;
+    border-radius: 8px; background: #fff; cursor: pointer;
+    font-size: 14px; text-align: center;
   }
-
-  .tool.active {
-    background: #e0e7ff;
-    border: 2px solid #4f46e5;
-    font-weight: bold;
-  }
-
-  #hint {
-    font-size: 12px;
-    color: #64748b;
-    line-height: 1.5;
-    margin-top: 4px;
-  }
-
-  @media (max-width:600px) {
-    #wrap {
-      gap: 8px;
-    }
-
-    #tools {
-      width: 112px;
-    }
-
-    .tool {
-      font-size: 12px;
-      padding: 9px 4px;
-    }
+  .tool.active { background: #e0e7ff; border: 2px solid #4f46e5; font-weight: bold; }
+  #hint { font-size: 12px; color: #64748b; line-height: 1.5; margin-top: 4px; }
+  @media (max-width: 600px) {
+    #wrap { gap: 8px; }
+    #tools { width: 112px; }
+    .tool { font-size: 12px; padding: 9px 4px; }
   }
 </style>
 </head>
-
 <body>
-
 <div id="wrap">
-
   <div id="board" aria-label="지도"></div>
-
   <aside id="tools">
-
-    <button class="tool active" data-mode="start">
-      🟢 출발점
-    </button>
-
-    <button class="tool" data-mode="goal">
-      🔴 종착점
-    </button>
-
-    <button class="tool" data-mode="obstacle">
-      ⬛ 장애물
-    </button>
-
-    <button class="tool" data-mode="erase">
-      ⌫ 블럭 삭제
-    </button>
-
+    <button class="tool active" data-mode="start">🟢 출발점</button>
+    <button class="tool" data-mode="goal">🔴 종착점</button>
+    <button class="tool" data-mode="obstacle">⬛ 장애물</button>
+    <button class="tool" data-mode="erase">⌫ 블럭 삭제</button>
     <div id="hint">
       1. 오른쪽에서 기능 선택<br>
       2. 원하는 칸에 마우스를 올림<br>
-      3. 키보드 F를 눌러 설치
+      3. F 키를 눌러 설치<br>
+      4. 장애물은 누른 채 드래그 가능
     </div>
-
   </aside>
-
 </div>
-
 <script>
-
-(function(){
-
+(function () {
   let args = {};
   let mode = "start";
   let hoverCell = null;
+  let dragStart = null;
+  let dragEnd = null;
   let lastSent = "";
 
   const board = document.getElementById("board");
-
-  const toolButtons = [
-    ...document.querySelectorAll(".tool")
-  ];
+  const toolButtons = [...document.querySelectorAll(".tool")];
 
   function send(value) {
-
     const serialized = JSON.stringify(value);
-
     if (serialized === lastSent) return;
-
     lastSent = serialized;
-
     window.parent.postMessage({
-
       isStreamlitMessage: true,
-
       type: "streamlit:setComponentValue",
-
       value: value
-
     }, "*");
-
   }
 
   function setHeight() {
-
-    const h = Math.max(
-      250,
-      board.getBoundingClientRect().height + 10
-    );
-
+    const h = Math.max(250, board.getBoundingClientRect().height + 10);
     window.parent.postMessage({
-
       isStreamlitMessage: true,
-
       type: "streamlit:setFrameHeight",
-
       height: h
-
     }, "*");
+  }
 
+  function cellKey(r, c) { return `${r},${c}`; }
+
+  function paintDragPreview() {
+    board.querySelectorAll(".drag-preview").forEach(el => el.classList.remove("drag-preview"));
+    if (!dragStart || !dragEnd) return;
+    const r1 = Math.min(dragStart.r, dragEnd.r);
+    const r2 = Math.max(dragStart.r, dragEnd.r);
+    const c1 = Math.min(dragStart.c, dragEnd.c);
+    const c2 = Math.max(dragStart.c, dragEnd.c);
+    for (let r = r1; r <= r2; r++) {
+      for (let c = c1; c <= c2; c++) {
+        const el = board.querySelector(`[data-r="${r}"][data-c="${c}"]`);
+        if (el) el.classList.add("drag-preview");
+      }
+    }
   }
 
   function render() {
-
     const rows = args.rows || 20;
     const cols = args.cols || 20;
-
-    const obstacles = new Set(
-      args.obstacles || []
-    );
-
-    board.style.gridTemplateColumns =
-      `repeat(${cols}, minmax(0, 1fr))`;
-
+    const obstacles = new Set(args.obstacles || []);
+    board.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
     board.innerHTML = "";
 
     for (let r = 0; r < rows; r++) {
-
       for (let c = 0; c < cols; c++) {
-
-        const key = `${r},${c}`;
-
+        const key = cellKey(r, c);
         const el = document.createElement("div");
-
         el.className = "cell";
-
         el.dataset.r = r;
         el.dataset.c = c;
 
-        if (obstacles.has(key)) {
-
-          el.classList.add("obstacle");
-          el.textContent = "";
-
-        }
-
+        if (obstacles.has(key)) el.classList.add("obstacle");
         if (args.start === key) {
-
           el.classList.add("start");
           el.textContent = "S";
-
         }
-
         if (args.goal === key) {
-
           el.classList.add("goal");
           el.textContent = "G";
-
         }
 
         el.addEventListener("mouseenter", () => {
-
           hoverCell = key;
-
-          el.classList.add("preview");
-
+          if (!dragStart) el.classList.add("preview");
         });
-
         el.addEventListener("mouseleave", () => {
-
-          hoverCell = null;
-
+          if (hoverCell === key) hoverCell = null;
           el.classList.remove("preview");
-
         });
-
+        el.addEventListener("pointerdown", event => {
+          if (mode !== "obstacle" || event.button !== 0) return;
+          event.preventDefault();
+          dragStart = { r, c };
+          dragEnd = { r, c };
+          paintDragPreview();
+        });
         board.appendChild(el);
-
       }
-
     }
-
     setHeight();
-
   }
 
-  // 오른쪽 도구 버튼 선택
-
   toolButtons.forEach(btn => {
-
     btn.addEventListener("click", () => {
-
       mode = btn.dataset.mode;
-
-      toolButtons.forEach(b => {
-
-        b.classList.toggle(
-          "active",
-          b === btn
-        );
-
-      });
-
+      toolButtons.forEach(b => b.classList.toggle("active", b === btn));
     });
-
   });
 
-  // F 키를 누르면 선택한 기능 실행
+  // 장애물 도구에서 누른 채 움직이면 시작 칸과 현재 칸 사이의 사각형을 미리 표시
+  document.addEventListener("pointermove", event => {
+    if (!dragStart) return;
+    const target = document.elementFromPoint(event.clientX, event.clientY);
+    const cell = target && target.closest ? target.closest(".cell") : null;
+    if (!cell || !board.contains(cell)) return;
+    dragEnd = { r: Number(cell.dataset.r), c: Number(cell.dataset.c) };
+    paintDragPreview();
+  });
 
-  document.addEventListener("keydown", e => {
-
-    if (
-      e.key.toLowerCase() !== "f"
-      || !hoverCell
-    ) {
-      return;
-    }
-
-    if (
-      ["INPUT", "TEXTAREA"].includes(
-        document.activeElement.tagName
-      )
-    ) {
-      return;
-    }
-
-    e.preventDefault();
-
+  // 마우스/터치 버튼을 놓으면 사각형 영역 전체를 Python으로 전달
+  document.addEventListener("pointerup", () => {
+    if (!dragStart || !dragEnd) return;
     send({
-
-      action: mode,
-
-      cell: hoverCell,
-
+      action: "obstacle_area",
+      start_cell: cellKey(dragStart.r, dragStart.c),
+      end_cell: cellKey(dragEnd.r, dragEnd.c),
       nonce: Date.now()
-
     });
-
+    dragStart = null;
+    dragEnd = null;
   });
 
-  // Streamlit에서 새로운 지도 정보 수신
+  document.addEventListener("pointercancel", () => {
+    dragStart = null;
+    dragEnd = null;
+    board.querySelectorAll(".drag-preview").forEach(el => el.classList.remove("drag-preview"));
+  });
 
+  // F 키로 현재 선택한 도구를 마우스가 올라간 칸에 적용
+  document.addEventListener("keydown", event => {
+    if (event.key.toLowerCase() !== "f" || !hoverCell || dragStart) return;
+    if (["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) return;
+    event.preventDefault();
+    send({ action: mode, cell: hoverCell, nonce: Date.now() });
+  });
+
+  // Streamlit에서 새 지도 정보를 받음
   window.addEventListener("message", event => {
-
     const msg = event.data;
-
-    if (
-      msg &&
-      msg.type === "streamlit:render"
-    ) {
-
+    if (msg && msg.type === "streamlit:render") {
       args = msg.args || {};
-
       lastSent = "";
-
+      dragStart = null;
+      dragEnd = null;
       render();
-
     }
-
   });
 
-  // Streamlit 컴포넌트 초기화
-
   window.parent.postMessage({
-
     isStreamlitMessage: true,
-
     type: "streamlit:componentReady",
-
     apiVersion: 1
-
   }, "*");
-
   window.parent.postMessage({
-
     isStreamlitMessage: true,
-
     type: "streamlit:setFrameHeight",
-
     height: 500
-
   }, "*");
-
 })();
-
 </script>
-
 </body>
 </html>

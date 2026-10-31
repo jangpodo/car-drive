@@ -10,14 +10,21 @@ import heapq
 import time
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
-from streamlit_plotly_events import plotly_events
+import streamlit.components.v1 as components
 
 Position = Tuple[int, int]
+
+# 마우스 올리기 + F 키 입력을 지원하는 지도 편집기
+map_editor = components.declare_component(
+    "robot_map_editor",
+    path=str(Path(__file__).parent / "map_editor")
+)
 
 
 @dataclass
@@ -36,17 +43,12 @@ def valid_position(pos: Position, rows: int, cols: int) -> bool:
 
 def neighbors(pos: Position, rows: int, cols: int) -> List[Position]:
     r, c = pos
-    candidates = [
-        (r - 1, c),
-        (r + 1, c),
-        (r, c - 1),
-        (r, c + 1)
-    ]
+    candidates = [(r-1, c), (r+1, c), (r, c-1), (r, c+1)]
     return [p for p in candidates if valid_position(p, rows, cols)]
 
 
 def manhattan(a: Position, b: Position) -> int:
-    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+    return abs(a[0]-b[0]) + abs(a[1]-b[1])
 
 
 def reconstruct_path(
@@ -79,29 +81,16 @@ def search(
     began = time.perf_counter()
     rows, cols = grid.shape
 
-    if not valid_position(start, rows, cols) or not valid_position(goal, rows, cols):
-        return SearchResult(
-            algorithm, [], set(), False, 0,
-            "출발점 또는 목적지가 지도 밖에 있습니다."
-        )
-
     if grid[start] or grid[goal]:
         return SearchResult(
             algorithm, [], set(), False, 0,
-            "출발점과 목적지는 장애물이 될 수 없습니다."
-        )
-
-    if start == goal:
-        return SearchResult(
-            algorithm, [start], {start}, True, 0,
-            "출발점과 목적지가 같습니다."
+            "출발점 또는 목적지에 장애물이 있습니다."
         )
 
     parent: Dict[Position, Position] = {}
     visited: Set[Position] = {start}
     found = False
 
-    # BFS 알고리즘
     if algorithm == "BFS":
 
         queue = deque([start])
@@ -120,7 +109,6 @@ def search(
                     parent[nxt] = current
                     queue.append(nxt)
 
-    # A* 알고리즘
     else:
 
         queue = [(manhattan(start, goal), 0, start)]
@@ -131,8 +119,9 @@ def search(
 
             _, current_g, current = heapq.heappop(queue)
 
-            if current in closed or current_g != g_score.get(
-                current, float("inf")
+            if (
+                current in closed
+                or current_g != g_score.get(current, float("inf"))
             ):
                 continue
 
@@ -179,171 +168,96 @@ def search(
     )
 
 
-def make_figure(
+def draw_result(
     grid: np.ndarray,
     start: Position,
     goal: Position,
-    result: SearchResult | None = None,
+    result: SearchResult,
     robot: Position | None = None
 ) -> go.Figure:
 
     rows, cols = grid.shape
+    z = np.zeros((rows, cols), dtype=int)
 
-    # 0: 빈 칸
-    # 1: 장애물
-    # 2: 탐색 영역
-    # 3: 최종 경로
+    z[grid] = 1
 
-    values = np.zeros((rows, cols), dtype=int)
-    values[grid] = 1
+    for p in result.visited:
+        if not grid[p]:
+            z[p] = 2
 
-    if result:
+    for p in result.path:
+        if not grid[p]:
+            z[p] = 3
 
-        for p in result.visited:
-            if valid_position(p, rows, cols) and not grid[p]:
-                values[p] = 2
+    fig = go.Figure(
+        go.Heatmap(
+            z=z,
+            colorscale=[
+                [0.00, "#F8FAFC"],
+                [0.24, "#F8FAFC"],
+                [0.25, "#374151"],
+                [0.49, "#374151"],
+                [0.50, "#FDE68A"],
+                [0.74, "#FDE68A"],
+                [0.75, "#60A5FA"],
+                [1.00, "#60A5FA"]
+            ],
+            zmin=0,
+            zmax=3,
+            showscale=False,
+            xgap=2,
+            ygap=2,
+            hovertemplate="행 %{y}, 열 %{x}<extra></extra>"
+        )
+    )
 
-        for p in result.path:
-            if valid_position(p, rows, cols) and not grid[p]:
-                values[p] = 3
+    fig.add_trace(
+        go.Scatter(
+            x=[start[1], goal[1]],
+            y=[start[0], goal[0]],
+            mode="markers+text",
+            marker=dict(
+                size=18,
+                color=["#16A34A", "#DC2626"]
+            ),
+            text=["S", "G"],
+            textposition="middle center",
+            textfont=dict(color="white"),
+            name="출발점 / 목적지"
+        )
+    )
 
-    xs, ys, colors, hover = [], [], [], []
-
-    palette = {
-        0: "#F4F6F8",
-        1: "#374151",
-        2: "#FDE68A",
-        3: "#60A5FA"
-    }
-
-    for r in range(rows):
-        for c in range(cols):
-
-            xs.append(c)
-            ys.append(r)
-
-            value = int(values[r, c])
-            colors.append(palette[value])
-
-            hover.append(
-                f"행: {r}, 열: {c}<br>" +
-                {
-                    0: "빈 칸",
-                    1: "장애물",
-                    2: "탐색 영역",
-                    3: "최종 경로"
-                }[value]
-            )
-
-    fig = go.Figure()
-
-    fig.add_trace(go.Scatter(
-        x=xs,
-        y=ys,
-        mode="markers",
-        marker=dict(
-            symbol="square",
-            size=max(7, min(28, 650 // max(rows, cols))),
-            color=colors,
-            line=dict(color="#CBD5E1", width=0.7)
-        ),
-        customdata=[
-            [r, c]
-            for r in range(rows)
-            for c in range(cols)
-        ],
-        text=hover,
-        hovertemplate="%{text}<extra></extra>",
-        name="지도"
-    ))
-
-    # 출발점
-    fig.add_trace(go.Scatter(
-        x=[start[1]],
-        y=[start[0]],
-        mode="markers+text",
-        marker=dict(
-            symbol="circle",
-            size=max(10, min(24, 700 // max(rows, cols))),
-            color="#16A34A",
-            line=dict(color="white", width=1.5)
-        ),
-        text=["S"],
-        textposition="middle center",
-        textfont=dict(color="white"),
-        name="출발점"
-    ))
-
-    # 목적지
-    fig.add_trace(go.Scatter(
-        x=[goal[1]],
-        y=[goal[0]],
-        mode="markers+text",
-        marker=dict(
-            symbol="star",
-            size=max(12, min(27, 750 // max(rows, cols))),
-            color="#DC2626",
-            line=dict(color="white", width=1)
-        ),
-        text=["G"],
-        textposition="middle center",
-        textfont=dict(color="white"),
-        name="목적지"
-    ))
-
-    # 로봇 위치
     if robot is not None:
 
-        fig.add_trace(go.Scatter(
-            x=[robot[1]],
-            y=[robot[0]],
-            mode="markers",
-            marker=dict(
-                symbol="diamond",
-                size=max(12, min(26, 750 // max(rows, cols))),
-                color="#7C3AED",
-                line=dict(color="white", width=1.5)
-            ),
-            name="로봇 위치"
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=[robot[1]],
+                y=[robot[0]],
+                mode="markers+text",
+                marker=dict(
+                    size=20,
+                    color="#7C3AED",
+                    symbol="diamond"
+                ),
+                text=["🚗"],
+                textposition="top center",
+                name="로봇"
+            )
+        )
 
     fig.update_layout(
         height=min(
             850,
             max(
                 350,
-                rows * max(8, min(24, 650 // max(rows, cols))) + 100
+                rows * max(9, min(22, 650 // max(rows, cols))) + 80
             )
         ),
-        margin=dict(l=10, r=10, t=25, b=10),
-        showlegend=True,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="left",
-            x=0
-        ),
-        clickmode="event+select",
-        plot_bgcolor="white"
+        margin=dict(l=10, r=10, t=20, b=10)
     )
 
-    fig.update_xaxes(
-        range=[-0.7, cols - 0.3],
-        dtick=max(1, cols // 20),
-        title="열 (column)",
-        showgrid=False,
-        zeroline=False
-    )
-
-    fig.update_yaxes(
-        range=[rows - 0.3, -0.7],
-        dtick=max(1, rows // 20),
-        title="행 (row)",
-        showgrid=False,
-        zeroline=False,
-        scaleanchor="x"
-    )
+    fig.update_yaxes(autorange="reversed", scaleanchor="x")
+    fig.update_xaxes(title="열")
 
     return fig
 
@@ -359,28 +273,20 @@ def main():
     st.title("🤖 자율주행 로봇 경로 탐색기")
 
     st.caption(
-        "지도 크기를 직접 정하고, 지도 칸을 클릭해 장애물을 배치한 뒤 경로를 탐색하세요."
+        "오른쪽 도구를 선택하고, 원하는 칸에 마우스를 올린 뒤 "
+        "F 키를 눌러 배치하세요."
     )
 
-    # 사이드바 설정
     with st.sidebar:
 
         st.header("지도 설정")
 
-        rows = st.number_input(
-            "행 수 (세로)",
-            min_value=5,
-            max_value=80,
-            value=20,
-            step=1
+        rows = int(
+            st.number_input("행 수", 5, 60, 20, 1)
         )
 
-        cols = st.number_input(
-            "열 수 (가로)",
-            min_value=5,
-            max_value=80,
-            value=20,
-            step=1
+        cols = int(
+            st.number_input("열 수", 5, 60, 20, 1)
         )
 
         algorithm = st.selectbox(
@@ -388,123 +294,174 @@ def main():
             ["A*", "BFS", "두 알고리즘 비교"]
         )
 
-        st.caption("예: 행 50, 열 50 → 50×50 칸")
-
-        st.markdown("---")
-
-        st.write("**장애물 배치 방법**")
-
-        st.write(
-            "아래 지도에서 빈 칸을 클릭하면 장애물이 추가되고, "
-            "장애물 칸을 클릭하면 제거됩니다."
-        )
-
-        st.caption("초록색 S: 출발점 · 빨간색 G: 목적지")
-
-    rows, cols = int(rows), int(cols)
     shape = (rows, cols)
 
-    # 지도 초기화
-    if (
-        "grid" not in st.session_state
-        or st.session_state.get("grid_shape") != shape
-    ):
+    if st.session_state.get("grid_shape") != shape:
 
         st.session_state.grid = np.zeros(shape, dtype=bool)
+        st.session_state.start = None
+        st.session_state.goal = None
         st.session_state.grid_shape = shape
         st.session_state.result_a = None
         st.session_state.result_b = None
-        st.session_state.robot_step = 0
 
-    start: Position = (0, 0)
-    goal: Position = (rows - 1, cols - 1)
+    if "grid" not in st.session_state:
+        st.session_state.grid = np.zeros(shape, dtype=bool)
 
-    if "result_a" not in st.session_state:
-        st.session_state.result_a = None
+    if "start" not in st.session_state:
+        st.session_state.start = None
 
-    if "result_b" not in st.session_state:
-        st.session_state.result_b = None
+    if "goal" not in st.session_state:
+        st.session_state.goal = None
 
-    # 지도 표시
-    st.subheader(f"지도 편집 ({rows} × {cols})")
+    left, right = st.columns([5, 1])
 
-    st.info(
-        "지도 칸을 클릭해 장애물을 배치하거나 제거하세요. "
-        "출발점과 목적지는 장애물로 바뀌지 않습니다."
-    )
+    with left:
 
-    edit_fig = make_figure(
-        st.session_state.grid,
-        start,
-        goal
-    )
+        st.subheader(f"백지 지도 ({rows} × {cols})")
 
-    clicked = plotly_events(
-        edit_fig,
-        click_event=True,
-        select_event=False,
-        hover_event=False,
-        override_height=edit_fig.layout.height,
-        key=f"map_click_{rows}_{cols}"
-    )
+        obstacles = [
+            f"{r},{c}"
+            for r in range(rows)
+            for c in range(cols)
+            if st.session_state.grid[r, c]
+        ]
 
-    if clicked:
+        event = map_editor(
+            rows=rows,
+            cols=cols,
+            obstacles=obstacles,
+            start=(
+                f"{st.session_state.start[0]},{st.session_state.start[1]}"
+                if st.session_state.start else None
+            ),
+            goal=(
+                f"{st.session_state.goal[0]},{st.session_state.goal[1]}"
+                if st.session_state.goal else None
+            ),
+            key="robot_map"
+        )
 
-        point = clicked[-1]
+    # F 키 입력 이벤트는 한 번만 처리
+    if (
+        isinstance(event, dict)
+        and event.get("nonce")
+        != st.session_state.get("last_event_nonce")
+    ):
 
-        if "x" in point and "y" in point:
+        st.session_state.last_event_nonce = event.get("nonce")
+        cell = event.get("cell", "")
 
-            c = int(round(point["x"]))
-            r = int(round(point["y"]))
+        try:
 
+            r, c = map(int, cell.split(","))
             pos = (r, c)
 
-            if valid_position(pos, rows, cols) and pos not in (start, goal):
+            if valid_position(pos, rows, cols):
 
-                st.session_state.grid[pos] = not st.session_state.grid[pos]
+                action = event.get("action")
+
+                if action == "start":
+
+                    st.session_state.start = pos
+                    st.session_state.grid[pos] = False
+
+                elif action == "goal":
+
+                    st.session_state.goal = pos
+                    st.session_state.grid[pos] = False
+
+                elif action == "obstacle":
+
+                    if pos not in (
+                        st.session_state.start,
+                        st.session_state.goal
+                    ):
+                        st.session_state.grid[pos] = True
+
+                elif action == "erase":
+
+                    st.session_state.grid[pos] = False
+
+                    if st.session_state.start == pos:
+                        st.session_state.start = None
+
+                    if st.session_state.goal == pos:
+                        st.session_state.goal = None
 
                 st.session_state.result_a = None
                 st.session_state.result_b = None
-                st.session_state.robot_step = 0
 
                 st.rerun()
 
-    # 버튼
-    b1, b2, b3 = st.columns(3)
+        except (ValueError, TypeError):
+            pass
 
-    with b1:
+    st.markdown(
+        "**사용 순서:** 오른쪽 도구에서 기능 선택 → "
+        "지도 칸에 마우스 올리기 → 키보드 **F** 누르기. "
+        "출발점과 목적지는 각각 한 개씩 지정할 수 있어."
+    )
 
-        if st.button(
-            "🧹 장애물 전체 지우기",
-            use_container_width=True
-        ):
+    st.caption(
+        "초록색 S = 출발점 · 빨간색 G = 종착점 · "
+        "짙은 회색 = 장애물"
+    )
+
+    st.subheader("도구")
+
+    tool_cols = st.columns(4)
+
+    tool_names = [
+        "🟢 출발점",
+        "🔴 종착점",
+        "⬛ 장애물",
+        "⌫ 블럭 삭제"
+    ]
+
+    for col, name in zip(tool_cols, tool_names):
+        with col:
+            st.write(name)
+
+    st.info(
+        "실제 도구 선택과 F 키 입력은 "
+        "지도 오른쪽의 도구 패널에서 진행해."
+    )
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+
+        if st.button("🧹 전체 초기화", use_container_width=True):
 
             st.session_state.grid = np.zeros(shape, dtype=bool)
+            st.session_state.start = None
+            st.session_state.goal = None
             st.session_state.result_a = None
             st.session_state.result_b = None
 
             st.rerun()
 
-    with b2:
+    with c2:
 
-        if st.button(
-            "🎲 무작위 장애물",
-            use_container_width=True
-        ):
+        if st.button("🎲 무작위 장애물", use_container_width=True):
 
             rng = np.random.default_rng()
-            grid = rng.random(shape) < 0.20
 
-            grid[start] = False
-            grid[goal] = False
+            st.session_state.grid = rng.random(shape) < 0.20
 
-            st.session_state.grid = grid
+            if st.session_state.start:
+                st.session_state.grid[st.session_state.start] = False
+
+            if st.session_state.goal:
+                st.session_state.grid[st.session_state.goal] = False
+
             st.session_state.result_a = None
             st.session_state.result_b = None
 
             st.rerun()
 
-    with b3:
+    with c3:
 
         run = st.button(
             "🔎 경로 탐색 및 자동차 이동",
@@ -512,252 +469,121 @@ def main():
             use_container_width=True
         )
 
-    # 경로 탐색과 자동차 애니메이션
     if run:
 
-        grid = st.session_state.grid.copy()
+        if (
+            st.session_state.start is None
+            or st.session_state.goal is None
+        ):
 
-        grid[start] = False
-        grid[goal] = False
-
-        st.session_state.result_a = (
-            search(grid, start, goal, "A*")
-            if algorithm in ("A*", "두 알고리즘 비교")
-            else None
-        )
-
-        st.session_state.result_b = (
-            search(grid, start, goal, "BFS")
-            if algorithm in ("BFS", "두 알고리즘 비교")
-            else None
-        )
-
-        st.session_state.robot_step = 0
-
-        animation_result = (
-            st.session_state.result_a
-            if st.session_state.result_a is not None
-            else st.session_state.result_b
-        )
-
-        if animation_result is not None and animation_result.found:
-
-            st.markdown("---")
-            st.subheader("🚗 자동차 주행 애니메이션")
-
-            st.caption(
-                "지도 크기와 경로 길이에 관계없이 약 5초 동안 주행합니다."
-            )
-
-            animation_area = st.empty()
-
-            path = animation_result.path
-
-            frame_count = min(50, max(2, len(path)))
-
-            frame_indices = sorted(set(
-                round(
-                    i * (len(path) - 1) / (frame_count - 1)
-                )
-                for i in range(frame_count)
-            ))
-
-            animation_started = time.perf_counter()
-            total_duration = 5.0
-
-            for frame_number, path_index in enumerate(frame_indices):
-
-                robot_pos = path[path_index]
-
-                frame_fig = make_figure(
-                    grid,
-                    start,
-                    goal,
-                    animation_result,
-                    robot_pos
-                )
-
-                frame_fig.add_trace(go.Scatter(
-                    x=[robot_pos[1]],
-                    y=[robot_pos[0]],
-                    mode="text",
-                    text=["🚗"],
-                    textfont=dict(
-                        size=max(
-                            12,
-                            min(25, 700 // max(rows, cols))
-                        )
-                    ),
-                    name="자동차",
-                    hovertemplate="자동차 현재 위치<extra></extra>",
-                    showlegend=False
-                ))
-
-                animation_area.plotly_chart(
-                    frame_fig,
-                    use_container_width=True,
-                    key=(
-                        f"drive_frame_{rows}_{cols}_"
-                        f"{frame_number}_{time.time_ns()}"
-                    )
-                )
-
-                target_time = (
-                    total_duration
-                    * (frame_number + 1)
-                    / len(frame_indices)
-                )
-
-                remaining = (
-                    animation_started
-                    + target_time
-                    - time.perf_counter()
-                )
-
-                if remaining > 0:
-                    time.sleep(remaining)
-
-            st.success("자동차가 목적지에 도착했습니다!")
-
-    # 탐색 결과
-    result_a = st.session_state.result_a
-    result_b = st.session_state.result_b
-
-    primary = (
-        result_a
-        if result_a is not None
-        else result_b
-    )
-
-    if primary is not None:
-
-        st.markdown("---")
-        st.subheader("탐색 결과")
-
-        result_fig = make_figure(
-            st.session_state.grid,
-            start,
-            goal,
-            primary
-        )
-
-        st.plotly_chart(
-            result_fig,
-            use_container_width=True
-        )
-
-        if primary.found:
-
-            st.success(primary.message)
-
-            st.metric(
-                "이동 거리",
-                f"{len(primary.path) - 1} 칸"
+            st.warning(
+                "먼저 출발점과 종착점을 각각 하나씩 설치해 주세요."
             )
 
         else:
 
-            st.warning(primary.message)
+            grid = st.session_state.grid.copy()
+            start = st.session_state.start
+            goal = st.session_state.goal
+
+            st.session_state.result_a = (
+                search(grid, start, goal, "A*")
+                if algorithm in ("A*", "두 알고리즘 비교")
+                else None
+            )
+
+            st.session_state.result_b = (
+                search(grid, start, goal, "BFS")
+                if algorithm in ("BFS", "두 알고리즘 비교")
+                else None
+            )
+
+            result = (
+                st.session_state.result_a
+                or st.session_state.result_b
+            )
+
+            if result and result.found:
+
+                st.subheader("🚗 자동차 주행")
+
+                area = st.empty()
+                started = time.perf_counter()
+
+                frames = min(40, max(2, len(result.path)))
+
+                indices = sorted(
+                    set(
+                        round(
+                            i * (len(result.path) - 1) / (frames - 1)
+                        )
+                        for i in range(frames)
+                    )
+                )
+
+                for i, idx in enumerate(indices):
+
+                    area.plotly_chart(
+                        draw_result(
+                            grid,
+                            start,
+                            goal,
+                            result,
+                            result.path[idx]
+                        ),
+                        use_container_width=True,
+                        key=f"animation_{i}_{time.time_ns()}"
+                    )
+
+                    wait = (
+                        5 * (i + 1) / len(indices)
+                        - (time.perf_counter() - started)
+                    )
+
+                    if wait > 0:
+                        time.sleep(wait)
+
+                st.success("목적지에 도착했습니다!")
+
+            elif result:
+
+                st.warning(result.message)
+
+    for result in (
+        st.session_state.result_a,
+        st.session_state.result_b
+    ):
+
+        if result is not None:
+
+            st.subheader(f"{result.algorithm} 탐색 결과")
+            st.write(result.message)
 
             st.metric(
                 "이동 거리",
-                "경로 없음"
+                f"{len(result.path)-1}칸"
+                if result.found else "경로 없음"
             )
 
-        m1, m2 = st.columns(2)
+            m1, m2 = st.columns(2)
 
-        m1.metric(
-            "탐색 노드 수",
-            len(primary.visited)
-        )
+            m1.metric("탐색 노드 수", len(result.visited))
+            m2.metric("실행 시간", f"{result.elapsed_ms:.3f} ms")
 
-        m2.metric(
-            "실행 시간",
-            f"{primary.elapsed_ms:.3f} ms"
-        )
+            if (
+                st.session_state.start
+                and st.session_state.goal
+            ):
 
-        # A*와 BFS 비교
-        if result_a is not None and result_b is not None:
-
-            st.subheader("A*와 BFS 비교")
-
-            comparison = {
-                "항목": [
-                    "경로 발견",
-                    "이동 거리(칸)",
-                    "탐색 노드 수",
-                    "실행 시간(ms)"
-                ],
-
-                "A*": [
-                    "성공" if result_a.found else "실패",
-                    len(result_a.path) - 1 if result_a.found else "—",
-                    len(result_a.visited),
-                    round(result_a.elapsed_ms, 3)
-                ],
-
-                "BFS": [
-                    "성공" if result_b.found else "실패",
-                    len(result_b.path) - 1 if result_b.found else "—",
-                    len(result_b.visited),
-                    round(result_b.elapsed_ms, 3)
-                ]
-            }
-
-            st.dataframe(
-                comparison,
-                hide_index=True,
-                use_container_width=True
-            )
-
-        # 로봇 이동 시뮬레이션
-        if primary.found:
-
-            st.subheader("🚗 로봇 이동 시뮬레이션")
-
-            step = st.slider(
-                "이동 단계",
-                0,
-                len(primary.path) - 1,
-                key="robot_step_slider"
-            )
-
-            robot = primary.path[step]
-
-            st.plotly_chart(
-                make_figure(
-                    st.session_state.grid,
-                    start,
-                    goal,
-                    primary,
-                    robot
-                ),
-                use_container_width=True
-            )
-
-            st.write(
-                f"현재 위치: 행 {robot[0]}, 열 {robot[1]}"
-            )
-
-            if step == len(primary.path) - 1:
-                st.success("로봇이 목적지에 도착했습니다.")
-
-    # 알고리즘 설명
-    with st.expander("알고리즘 설명"):
-
-        st.markdown(
-            "**BFS**는 가까운 칸부터 탐색하며, "
-            "모든 이동 비용이 같을 때 최단 경로를 찾습니다.\n\n"
-
-            "**A\\***는 실제 이동 비용 `g(n)`과 "
-            "목적지까지의 예상 비용 `h(n)`을 더한 "
-            "`f(n)=g(n)+h(n)`을 기준으로 탐색합니다. "
-
-            "이 앱은 상하좌우 이동에 맞는 맨해튼 거리를 사용합니다.\n\n"
-
-            "이 앱은 경로 탐색 학습용 시뮬레이터이며 "
-            "실제 로봇의 센서나 물리적 움직임을 제어하지 않습니다."
-        )
+                st.plotly_chart(
+                    draw_result(
+                        st.session_state.grid,
+                        st.session_state.start,
+                        st.session_state.goal,
+                        result
+                    ),
+                    use_container_width=True
+                )
 
 
 if __name__ == "__main__":

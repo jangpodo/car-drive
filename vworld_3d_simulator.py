@@ -34,6 +34,7 @@ html = r"""
 <html lang="ko">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 html, body { margin:0; padding:0; overflow:hidden; background:#dce8ef;

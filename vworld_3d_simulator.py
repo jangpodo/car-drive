@@ -3,79 +3,265 @@ import streamlit.components.v1 as components
 
 st.set_page_config(page_title="3D 운전 교실", page_icon="🚗", layout="wide")
 st.title("🚗 3D 운전 교실")
-st.caption("가상 도로에서 자동차를 운전해 보세요.")
-st.markdown("**W/S:** 전진·후진　 **A/D:** 좌회전·우회전　 **마우스 드래그:** 시점 회전　 **마우스 휠:** 줌　 **스페이스:** 정지")
+st.caption("가벼운 3D 가상 도로에서 자동차를 운전해 보세요.")
+st.markdown(
+    "**W/S 또는 ↑/↓:** 전진·후진　 **A/D 또는 ←/→:** 좌회전·우회전　 "
+    "**마우스 드래그:** 시점 회전　 **마우스 휠:** 줌　 **스페이스:** 정지"
+)
 
 html = r"""
-<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
 <style>
-html,body{margin:0;overflow:hidden;background:#b9d9ef;font-family:Arial}
-#game{width:100%;height:690px}
-#hud{position:absolute;top:12px;left:12px;padding:10px 14px;background:#172638d9;color:white;border-radius:9px;line-height:1.6;pointer-events:none}
-#help{position:absolute;bottom:12px;right:12px;padding:8px 12px;background:#172638c9;color:white;border-radius:8px;font-size:12px;pointer-events:none}
-#error{display:none;color:white;background:#263442;padding:20px}
-</style></head><body>
-<div id="game"></div><div id="hud">속도 <span id="speed">0</span> km/h<br>방향 <span id="dir">북쪽</span></div>
-<div id="help">WASD 운전 · 마우스 드래그 시점 회전 · 휠 줌 · 스페이스 정지</div><div id="error"></div>
+html, body { margin:0; padding:0; overflow:hidden; background:#b9d9ef; font-family:Arial,sans-serif; }
+#game { width:100%; height:650px; position:relative; overflow:hidden; }
+#hud { position:absolute; z-index:2; top:12px; left:12px; padding:9px 13px;
+       background:#172638dd; color:white; border-radius:9px; line-height:1.6;
+       pointer-events:none; font-size:14px; }
+#help { position:absolute; z-index:2; bottom:10px; right:10px; padding:7px 10px;
+        background:#172638cc; color:white; border-radius:8px; font-size:12px;
+        pointer-events:none; }
+#error { display:none; position:absolute; z-index:3; inset:12px; height:max-content;
+         color:white; background:#7b2020; padding:14px; border-radius:8px; }
+canvas { display:block; }
+</style>
+</head>
+<body>
+<div id="game">
+  <div id="hud">속도 <span id="speed">0</span> km/h<br>방향 <span id="dir">북쪽</span></div>
+  <div id="help">WASD 운전 · 드래그 시점 회전 · 휠 줌 · 스페이스 정지</div>
+  <div id="error"></div>
+</div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-(()=>{
-const err=document.getElementById('error');
-if(!window.THREE){err.style.display='block';err.textContent='3D 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.';return;}
-const T=THREE, root=document.getElementById('game'), scene=new T.Scene();
-scene.background=new T.Color(0xb9d9ef);scene.fog=new T.Fog(0xb9d9ef,70,220);
-const camera=new T.PerspectiveCamera(62,root.clientWidth/690,.1,500);
-const renderer=new T.WebGLRenderer({antialias:true});renderer.setPixelRatio(Math.min(devicePixelRatio||1,2));renderer.setSize(root.clientWidth,690);renderer.shadowMap.enabled=true;root.appendChild(renderer.domElement);
-scene.add(new T.HemisphereLight(0xffffff,0x687b62,1.25));
-const sun=new T.DirectionalLight(0xffffff,1.2);sun.position.set(-35,65,25);sun.castShadow=true;sun.shadow.mapSize.set(1024,1024);scene.add(sun);
-const material=(c,r=.85)=>new T.MeshStandardMaterial({color:c,roughness:r});
-function block(parent,w,h,d,m,x,y,z){const o=new T.Mesh(new T.BoxGeometry(w,h,d),m);o.position.set(x,y,z);o.castShadow=true;o.receiveShadow=true;parent.add(o);return o;}
-const grass=material(0x6d9d61),road=material(0x343b43),side=material(0xb9b9b2),white=material(0xf4f1df),yellow=material(0xf5df8a);
-const floor=new T.Mesh(new T.PlaneGeometry(500,500),grass);floor.rotation.x=-Math.PI/2;floor.position.y=-.12;floor.receiveShadow=true;scene.add(floor);
-block(scene,15,.08,230,road,0,-.035,0);block(scene,230,.08,15,road,0,-.034,0);
-block(scene,2,.18,230,side,-9,.02,0);block(scene,2,.18,230,side,9,.02,0);
-block(scene,230,.18,2,side,0,.02,-9);block(scene,230,.18,2,side,0,.02,9);
-for(let n=-105;n<=105;n+=12){block(scene,.16,.025,5,yellow,0,.025,n);block(scene,5,.025,.16,yellow,n,.025,0);}
-for(let n=-5;n<=5;n++){block(scene,1,.025,5.5,white,n*1.25,.03,-10.5);block(scene,5.5,.025,1,white,10.5,.03,n*1.25);}
-const colors=[0xd9c7ad,0xc4d4dc,0xe0b9a8,0xd4d0bd,0xb9c8b2,0xd2c1dc];
-for(let x=-5;x<=5;x++)for(let z=-5;z<=5;z++){
- if(Math.abs(x)<=1||Math.abs(z)<=1)continue;
- const bx=x*27+(Math.random()-.5)*4,bz=z*27+(Math.random()-.5)*4,w=10+Math.random()*5,d=10+Math.random()*5,h=8+Math.random()*23;
- block(scene,w,h,d,material(colors[Math.floor(Math.random()*colors.length)]),bx,h/2,bz);
- const win=material(0x8eb6c7,.35);
- for(let yy=3;yy<h-1;yy+=4)for(let xx=-w/2+1.5;xx<w/2-1;xx+=3)block(scene,.9,1,.07,win,bx+xx,yy,bz-d/2-.04);
-}
-const trunk=material(0x765034),leaves=material(0x397c45);
-for(let z=-95;z<=95;z+=19)for(const x of [-13,13]){
- const t=new T.Mesh(new T.CylinderGeometry(.22,.3,2.4,8),trunk);t.position.set(x,1.1,z);scene.add(t);
- const c=new T.Mesh(new T.SphereGeometry(1.4,10,8),leaves);c.position.set(x,3,z);scene.add(c);
-}
-// 단순한 자동차 모델
-const car=new T.Group();scene.add(car);
-const paint=material(0xd93636,.38),dark=material(0x20252b,.45),glass=material(0x8fc5d8,.2),lamp=new T.MeshStandardMaterial({color:0xfff2c4,emissive:0x554422});
-block(car,2.25,.62,4.25,paint,0,.85,0);block(car,1.82,.9,2.05,paint,0,1.55,-.35);
-block(car,1.68,.68,1.85,glass,0,1.62,-.35);block(car,2.05,.16,1.05,dark,0,1.13,1.25);
-block(car,.42,.18,.12,lamp,-.72,.95,2.14);block(car,.42,.18,.12,lamp,.72,.95,2.14);
-const wheelGeo=new T.CylinderGeometry(.48,.48,.32,20);
-for(const x of [-1.12,1.12])for(const z of [-1.35,1.35]){const w=new T.Mesh(wheelGeo,dark);w.rotation.z=Math.PI/2;w.position.set(x,.52,z);car.add(w);}
-car.position.set(0,0,0);
-const keys={};let speed=0,yaw=0,orbit=0,pitch=.22,distance=10,drag=false,lx=0,ly=0;
-addEventListener('keydown',e=>{if(['KeyW','KeyA','KeyS','KeyD','Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code))e.preventDefault();keys[e.code]=true;if(e.code==='Space')speed=0;});
-addEventListener('keyup',e=>keys[e.code]=false);
-renderer.domElement.addEventListener('pointerdown',e=>{drag=true;lx=e.clientX;ly=e.clientY;renderer.domElement.setPointerCapture(e.pointerId);});
-renderer.domElement.addEventListener('pointerup',()=>drag=false);
-renderer.domElement.addEventListener('pointermove',e=>{if(!drag)return;orbit-=(e.clientX-lx)*.006;pitch=Math.max(-.05,Math.min(.85,pitch+(e.clientY-ly)*.004));lx=e.clientX;ly=e.clientY;});
-renderer.domElement.addEventListener('wheel',e=>distance=Math.max(5,Math.min(22,distance+e.deltaY*.012)),{passive:true});
-const clock=new T.Clock(),speedText=document.getElementById('speed'),dirText=document.getElementById('dir');
-function animate(){requestAnimationFrame(animate);const dt=Math.min(clock.getDelta()*60,2.2);
- if(keys.KeyW||keys.ArrowUp)speed=Math.min(.34,speed+.012*dt);else if(keys.KeyS||keys.ArrowDown)speed=Math.max(-.19,speed-.012*dt);else speed*=Math.pow(.985,dt);
- if(keys.KeyA||keys.ArrowLeft)yaw+=.035*dt*(speed<-.01?-1:1);if(keys.KeyD||keys.ArrowRight)yaw-=.035*dt*(speed<-.01?-1:1);
- car.rotation.y=yaw;car.position.x=Math.max(-105,Math.min(105,car.position.x+Math.sin(yaw)*speed*dt));car.position.z=Math.max(-105,Math.min(105,car.position.z+Math.cos(yaw)*speed*dt));
- const a=yaw+orbit,h=distance*Math.cos(pitch);camera.position.set(car.position.x-Math.sin(a)*h,2.2+distance*Math.sin(pitch),car.position.z-Math.cos(a)*h);camera.lookAt(car.position.x,1,car.position.z);
- speedText.textContent=Math.round(Math.abs(speed)*120);const dirs=['북쪽','북동쪽','동쪽','남동쪽','남쪽','남서쪽','서쪽','북서쪽'];dirText.textContent=dirs[Math.round((((yaw*180/Math.PI)%360+360)%360)/45)%8];renderer.render(scene,camera);
-}animate();
-addEventListener('resize',()=>{camera.aspect=root.clientWidth/690;camera.updateProjectionMatrix();renderer.setSize(root.clientWidth,690);});
+(() => {
+  const root = document.getElementById("game");
+  const errorBox = document.getElementById("error");
+  if (!window.THREE) {
+    errorBox.style.display = "block";
+    errorBox.textContent = "3D 라이브러리를 불러오지 못했습니다. 페이지를 새로고침하거나 인터넷 연결을 확인해 주세요.";
+    return;
+  }
+
+  const T = THREE;
+  const scene = new T.Scene();
+  scene.background = new T.Color(0xb9d9ef);
+  scene.fog = new T.Fog(0xb9d9ef, 85, 190);
+
+  const camera = new T.PerspectiveCamera(62, root.clientWidth / 650, 0.1, 300);
+  const renderer = new T.WebGLRenderer({
+    antialias: false,
+    powerPreference: "low-power",
+    alpha: false
+  });
+  // 고해상도 화면에서도 렌더링 부담이 커지지 않도록 해상도를 제한
+  renderer.setPixelRatio(1);
+  renderer.setSize(root.clientWidth, 650);
+  // 실시간 그림자 계산은 성능 부담이 커서 사용하지 않음
+  renderer.shadowMap.enabled = false;
+  root.appendChild(renderer.domElement);
+
+  scene.add(new T.HemisphereLight(0xffffff, 0x718064, 1.5));
+  const sun = new T.DirectionalLight(0xffffff, 0.8);
+  sun.position.set(-25, 45, 20);
+  scene.add(sun);
+
+  const mat = (color) => new T.MeshLambertMaterial({ color });
+  const grassMat = mat(0x6d9d61);
+  const roadMat = mat(0x343b43);
+  const curbMat = mat(0xb9b9b2);
+  const lineMat = mat(0xf5df8a);
+  const whiteMat = mat(0xf4f1df);
+
+  function box(parent, w, h, d, material, x, y, z) {
+    const mesh = new T.Mesh(new T.BoxGeometry(w, h, d), material);
+    mesh.position.set(x, y, z);
+    parent.add(mesh);
+    return mesh;
+  }
+
+  // 바닥과 십자 도로
+  const ground = new T.Mesh(new T.PlaneGeometry(400, 400), grassMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -0.12;
+  scene.add(ground);
+
+  box(scene, 15, 0.08, 220, roadMat, 0, -0.035, 0);
+  box(scene, 220, 0.08, 15, roadMat, 0, -0.035, 0);
+
+  // 도로 가장자리
+  box(scene, 0.35, 0.12, 220, curbMat, -7.7, 0.02, 0);
+  box(scene, 0.35, 0.12, 220, curbMat, 7.7, 0.02, 0);
+  box(scene, 220, 0.12, 0.35, curbMat, 0, 0.02, -7.7);
+  box(scene, 220, 0.12, 0.35, curbMat, 0, 0.02, 7.7);
+
+  // 중앙 차선: 개수를 줄여 오브젝트 수 최소화
+  for (let p = -100; p <= 100; p += 14) {
+    box(scene, 0.14, 0.025, 5, lineMat, 0, 0.025, p);
+    box(scene, 5, 0.025, 0.14, lineMat, p, 0.025, 0);
+  }
+
+  // 건물: 창문을 생략하고 단순한 건물만 배치
+  const buildingMats = [
+    mat(0xd9c7ad), mat(0xc4d4dc), mat(0xe0b9a8),
+    mat(0xd4d0bd), mat(0xb9c8b2), mat(0xd2c1dc)
+  ];
+  let seed = 17;
+  function rand() {
+    seed = (seed * 9301 + 49297) % 233280;
+    return seed / 233280;
+  }
+
+  for (let x = -3; x <= 3; x++) {
+    for (let z = -3; z <= 3; z++) {
+      if (Math.abs(x) <= 1 || Math.abs(z) <= 1) continue;
+      const bx = x * 25 + (rand() - 0.5) * 3;
+      const bz = z * 25 + (rand() - 0.5) * 3;
+      const w = 8 + rand() * 4;
+      const d = 8 + rand() * 4;
+      const h = 7 + rand() * 15;
+      box(scene, w, h, d, buildingMats[Math.floor(rand() * buildingMats.length)],
+          bx, h / 2, bz);
+    }
+  }
+
+  // 나무도 적은 수의 단순한 도형으로 표현
+  const trunkMat = mat(0x765034);
+  const leafMat = mat(0x397c45);
+  const trunkGeo = new T.CylinderGeometry(0.18, 0.24, 1.8, 6);
+  const leafGeo = new T.SphereGeometry(1.05, 7, 6);
+  for (let z = -85; z <= 85; z += 28) {
+    for (const x of [-12, 12]) {
+      const trunk = new T.Mesh(trunkGeo, trunkMat);
+      trunk.position.set(x, 0.9, z);
+      scene.add(trunk);
+      const crown = new T.Mesh(leafGeo, leafMat);
+      crown.position.set(x, 2.25, z);
+      scene.add(crown);
+    }
+  }
+
+  // 자동차 모델
+  const car = new T.Group();
+  scene.add(car);
+  const paint = mat(0xd93636);
+  const dark = mat(0x20252b);
+  const glass = mat(0x8fc5d8);
+  const lampMat = mat(0xffe8a8);
+
+  box(car, 2.05, 0.58, 3.8, paint, 0, 0.78, 0);
+  box(car, 1.62, 0.82, 1.85, paint, 0, 1.43, -0.28);
+  box(car, 1.48, 0.58, 1.68, glass, 0, 1.48, -0.28);
+  box(car, 1.85, 0.13, 0.8, dark, 0, 1.1, 1.12);
+  box(car, 0.34, 0.15, 0.1, lampMat, -0.65, 0.88, 1.92);
+  box(car, 0.34, 0.15, 0.1, lampMat, 0.65, 0.88, 1.92);
+
+  const wheelGeo = new T.CylinderGeometry(0.4, 0.4, 0.28, 10);
+  const wheels = [];
+  for (const x of [-1.03, 1.03]) {
+    for (const z of [-1.18, 1.18]) {
+      const wheel = new T.Mesh(wheelGeo, dark);
+      wheel.rotation.z = Math.PI / 2;
+      wheel.position.set(x, 0.43, z);
+      car.add(wheel);
+      wheels.push(wheel);
+    }
+  }
+
+  const keys = Object.create(null);
+  let speed = 0;
+  let yaw = 0;
+  let orbit = 0;
+  let pitch = 0.2;
+  let distance = 10;
+  let dragging = false;
+  let lastX = 0;
+  let lastY = 0;
+
+  window.addEventListener("keydown", (e) => {
+    if (["KeyW","KeyA","KeyS","KeyD","Space","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.code)) {
+      e.preventDefault();
+    }
+    keys[e.code] = true;
+    if (e.code === "Space") speed = 0;
+  });
+  window.addEventListener("keyup", (e) => { keys[e.code] = false; });
+  window.addEventListener("blur", () => {
+    for (const k in keys) keys[k] = false;
+  });
+
+  renderer.domElement.addEventListener("pointerdown", (e) => {
+    dragging = true;
+    lastX = e.clientX;
+    lastY = e.clientY;
+    renderer.domElement.setPointerCapture(e.pointerId);
+  });
+  renderer.domElement.addEventListener("pointerup", () => { dragging = false; });
+  renderer.domElement.addEventListener("pointercancel", () => { dragging = false; });
+  renderer.domElement.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    orbit -= (e.clientX - lastX) * 0.006;
+    pitch = Math.max(-0.05, Math.min(0.8, pitch + (e.clientY - lastY) * 0.004));
+    lastX = e.clientX;
+    lastY = e.clientY;
+  });
+  renderer.domElement.addEventListener("wheel", (e) => {
+    distance = Math.max(5, Math.min(20, distance + e.deltaY * 0.01));
+  }, { passive: true });
+
+  const speedText = document.getElementById("speed");
+  const dirText = document.getElementById("dir");
+  const directions = ["북쪽","북동쪽","동쪽","남동쪽","남쪽","남서쪽","서쪽","북서쪽"];
+  const clock = new T.Clock();
+  let animationId = 0;
+
+  function animate() {
+    animationId = requestAnimationFrame(animate);
+    const dt = Math.min(clock.getDelta(), 0.04);
+
+    if (keys.KeyW || keys.ArrowUp) speed = Math.min(10, speed + 5 * dt);
+    else if (keys.KeyS || keys.ArrowDown) speed = Math.max(-5, speed - 5 * dt);
+    else speed *= Math.pow(0.94, dt * 60);
+
+    if (keys.KeyA || keys.ArrowLeft) yaw += 1.8 * dt * (speed < -0.1 ? -1 : 1);
+    if (keys.KeyD || keys.ArrowRight) yaw -= 1.8 * dt * (speed < -0.1 ? -1 : 1);
+
+    car.rotation.y = yaw;
+    car.position.x = Math.max(-103, Math.min(103, car.position.x + Math.sin(yaw) * speed * dt));
+    car.position.z = Math.max(-103, Math.min(103, car.position.z + Math.cos(yaw) * speed * dt));
+
+    for (const wheel of wheels) wheel.rotation.x -= speed * dt / 0.4;
+
+    const angle = yaw + orbit;
+    const horizontal = distance * Math.cos(pitch);
+    camera.position.set(
+      car.position.x - Math.sin(angle) * horizontal,
+      2.1 + distance * Math.sin(pitch),
+      car.position.z - Math.cos(angle) * horizontal
+    );
+    camera.lookAt(car.position.x, 1, car.position.z);
+
+    speedText.textContent = Math.round(Math.abs(speed) * 12);
+    const deg = ((yaw * 180 / Math.PI) % 360 + 360) % 360;
+    dirText.textContent = directions[Math.round(deg / 45) % 8];
+    renderer.render(scene, camera);
+  }
+
+  animate();
+
+  function resize() {
+    const width = Math.max(1, root.clientWidth);
+    camera.aspect = width / 650;
+    camera.updateProjectionMatrix();
+    renderer.setSize(width, 650);
+  }
+  window.addEventListener("resize", resize);
 })();
-</script></body></html>
+</script>
+</body>
+</html>
 """
-components.html(html, height=710, scrolling=False)
+
+components.html(html, height=670, scrolling=False)

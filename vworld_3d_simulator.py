@@ -1,320 +1,310 @@
 import streamlit as st
 import streamlit.components.v1 as components
+from urllib.parse import quote
 
-st.set_page_config(page_title="3D 운전 교실", page_icon="🚗", layout="wide")
-st.title("🚗 3D 운전 교실")
-st.caption("앞바퀴 조향과 세부 자동차 모델을 추가한 3D 운전 시뮬레이터입니다.")
+st.set_page_config(page_title="서울 3D 운전 교실", page_icon="🚗", layout="wide")
+st.title("🚗 서울 3D 운전 교실")
+st.caption("브이월드 3D 지도 위에서 실제 지리 좌표를 사용해 자유 주행하는 시뮬레이터")
+
 st.markdown(
-    "**W/S 또는 ↑/↓:** 전진·후진　 **A/D 또는 ←/→:** 좌회전·우회전　 "
-    "**마우스 드래그:** 시점 회전　 **마우스 휠:** 줌　 **스페이스:** 정지"
+    "**W/S 또는 ↑/↓:** 전진·후진　 "
+    "**A/D 또는 ←/→:** 좌회전·우회전　 "
+    "**C:** 카메라 따라가기 전환　 "
+    "**스페이스:** 정지"
 )
+
+try:
+    api_key = st.secrets["VWORLD_API_KEY"]
+except Exception:
+    st.error(
+        "브이월드 인증키를 찾을 수 없습니다. "
+        "Streamlit Cloud의 Settings → Secrets에 "
+        '`VWORLD_API_KEY = "발급받은_인증키"`를 등록해 주세요.'
+    )
+    st.stop()
+
+if not str(api_key).strip():
+    st.error("VWORLD_API_KEY 값이 비어 있습니다.")
+    st.stop()
+
+encoded_key = quote(str(api_key).strip(), safe="")
 
 html = r"""
 <!doctype html>
 <html lang="ko">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-html, body { margin:0; padding:0; overflow:hidden; background:#b9d9ef; font-family:Arial,sans-serif; }
-#game { width:100%; height:650px; position:relative; overflow:hidden; }
-#hud { position:absolute; z-index:2; top:12px; left:12px; padding:10px 14px;
-       background:#172638e8; color:white; border-radius:10px; line-height:1.7;
-       pointer-events:none; font-size:14px; min-width:135px; }
-#help { position:absolute; z-index:2; bottom:10px; right:10px; padding:8px 11px;
-        background:#172638dd; color:white; border-radius:8px; font-size:12px;
-        pointer-events:none; }
-#error { display:none; position:absolute; z-index:3; inset:12px; height:max-content;
-         color:white; background:#7b2020; padding:14px; border-radius:8px; }
-canvas { display:block; }
+html, body { margin:0; padding:0; overflow:hidden; background:#dce8ef;
+  font-family:Arial,sans-serif; }
+#app { position:relative; width:100%; height:720px; overflow:hidden; }
+#vmap { width:100%; height:720px; background:#dce8ef; }
+#hud { position:absolute; z-index:10; top:12px; left:12px;
+  padding:11px 15px; min-width:155px; line-height:1.75;
+  color:#fff; background:rgba(20,35,52,.90); border-radius:10px;
+  box-shadow:0 3px 12px rgba(0,0,0,.2); pointer-events:none; font-size:14px; }
+#hud b { color:#ffe08a; }
+#help { position:absolute; z-index:10; bottom:12px; left:12px;
+  padding:8px 11px; color:#fff; background:rgba(20,35,52,.86);
+  border-radius:8px; font-size:12px; pointer-events:none; }
+#follow { position:absolute; z-index:11; right:12px; top:12px;
+  border:0; border-radius:8px; padding:9px 12px; color:#fff;
+  background:#245b87; font-weight:bold; cursor:pointer; }
+#status { position:absolute; z-index:10; top:58px; left:12px;
+  max-width:calc(100% - 30px); padding:7px 10px; color:#182b3c;
+  background:rgba(255,255,255,.91); border-radius:7px; font-size:12px; }
+#error { display:none; position:absolute; z-index:20; top:110px; left:12px;
+  right:12px; padding:13px; color:white; background:#8b2424;
+  border-radius:8px; white-space:pre-wrap; font-size:13px; }
 </style>
+<script src="https://map.vworld.kr/js/webglMapInit.js.do?version=3.0&apiKey=__VWORLD_KEY__"></script>
 </head>
 <body>
-<div id="game">
+<div id="app">
+  <div id="vmap"></div>
   <div id="hud">
     속도 <b><span id="speed">0</span></b> km/h<br>
-    방향 <b><span id="dir">북쪽</span></b><br>
-    조향각 <b><span id="steer">0</span></b>°
+    방향 <b><span id="direction">북쪽</span></b><br>
+    앞바퀴 조향 <b><span id="steering">0</span></b>°
   </div>
-  <div id="help">WASD 운전 · A/D 앞바퀴 조향 · 드래그 시점 회전 · 휠 줌</div>
+  <div id="status">서울시청에서 시작 · 실제 지도 좌표 기반 · 도로 주행 경로 제한은 아직 적용되지 않은 자유 주행 모드</div>
+  <button id="follow" type="button">카메라 따라가기: 켜짐 (C)</button>
+  <div id="help">WASD 운전 · 마우스로 지도 이동/회전 · 휠로 확대/축소 · C 카메라 전환</div>
   <div id="error"></div>
 </div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
 <script>
-(() => {
-  const root = document.getElementById("game");
+(function () {
   const errorBox = document.getElementById("error");
-  if (!window.THREE) {
+  function showError(message) {
     errorBox.style.display = "block";
-    errorBox.textContent = "3D 라이브러리를 불러오지 못했습니다. 새로고침하거나 인터넷 연결을 확인해 주세요.";
+    errorBox.textContent = message;
+  }
+
+  if (!window.vw) {
+    showError("브이월드 3D 지도 라이브러리를 불러오지 못했습니다.\\n인증키, 등록된 서비스 URL, 네트워크 연결을 확인해 주세요.");
     return;
   }
 
-  const T = THREE;
-  const scene = new T.Scene();
-  scene.background = new T.Color(0xb9d9ef);
-  scene.fog = new T.Fog(0xb9d9ef, 85, 190);
+  const startLon = 126.9780; // 서울시청 경도
+  const startLat = 37.5665;  // 서울시청 위도
+  const startHeight = 1.0;
 
-  const camera = new T.PerspectiveCamera(62, root.clientWidth / 650, 0.1, 300);
-  const renderer = new T.WebGLRenderer({ antialias: true, powerPreference: "low-power" });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
-  renderer.setSize(root.clientWidth, 650);
-  renderer.shadowMap.enabled = false;
-  root.appendChild(renderer.domElement);
+  const options = {
+    mapId: "vmap",
+    initPosition: new vw.CameraPosition(
+      new vw.CoordZ(startLon, startLat, 1600),
+      new vw.Direction(0, -48, 0)
+    ),
+    logo: true,
+    navigation: true
+  };
 
-  scene.add(new T.HemisphereLight(0xffffff, 0x718064, 1.6));
-  const sun = new T.DirectionalLight(0xffffff, 0.9);
-  sun.position.set(-25, 45, 20);
-  scene.add(sun);
+  const map = new vw.Map();
+  map.setOption(options);
+  map.setMapId("vmap");
+  map.setInitPosition(new vw.CameraPosition(
+    new vw.CoordZ(startLon, startLat, 1600),
+    new vw.Direction(0, -48, 0)
+  ));
 
-  const mat = (color, roughness=0.8, metalness=0) =>
-    new T.MeshStandardMaterial({ color, roughness, metalness });
+  let viewer = null;
+  let carParts = [];
+  let car = { lon: startLon, lat: startLat, heading: 0, speed: 0, steer: 0 };
+  let cameraFollow = true;
+  let lastTime = 0;
+  const keys = Object.create(null);
 
-  const grassMat = mat(0x6d9d61);
-  const roadMat = mat(0x343b43);
-  const curbMat = mat(0xb9b9b2);
-  const lineMat = mat(0xf5df8a);
-  const whiteMat = mat(0xf4f1df);
-
-  function box(parent, w, h, d, material, x, y, z) {
-    const mesh = new T.Mesh(new T.BoxGeometry(w, h, d), material);
-    mesh.position.set(x, y, z);
-    parent.add(mesh);
-    return mesh;
+  function setFollowButton() {
+    document.getElementById("follow").textContent =
+      "카메라 따라가기: " + (cameraFollow ? "켜짐" : "꺼짐") + " (C)";
   }
+  document.getElementById("follow").addEventListener("click", function () {
+    cameraFollow = !cameraFollow;
+    setFollowButton();
+    if (!cameraFollow && viewer && typeof Cesium !== "undefined") {
+      viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+    }
+  });
 
-  // 바닥과 십자 도로
-  const ground = new T.Mesh(new T.PlaneGeometry(400, 400), grassMat);
-  ground.rotation.x = -Math.PI / 2;
-  ground.position.y = -0.12;
-  scene.add(ground);
-  box(scene, 15, 0.08, 220, roadMat, 0, -0.035, 0);
-  box(scene, 220, 0.08, 15, roadMat, 0, -0.035, 0);
-
-  box(scene, 0.35, 0.12, 220, curbMat, -7.7, 0.02, 0);
-  box(scene, 0.35, 0.12, 220, curbMat, 7.7, 0.02, 0);
-  box(scene, 220, 0.12, 0.35, curbMat, 0, 0.02, -7.7);
-  box(scene, 220, 0.12, 0.35, curbMat, 0, 0.02, 7.7);
-
-  for (let p = -100; p <= 100; p += 14) {
-    box(scene, 0.14, 0.025, 5, lineMat, 0, 0.025, p);
-    box(scene, 5, 0.025, 0.14, lineMat, p, 0.025, 0);
-  }
-
-  // 주변 건물
-  const buildingMats = [
-    mat(0xd9c7ad), mat(0xc4d4dc), mat(0xe0b9a8),
-    mat(0xd4d0bd), mat(0xb9c8b2), mat(0xd2c1dc)
-  ];
-  let seed = 17;
-  function rand() {
-    seed = (seed * 9301 + 49297) % 233280;
-    return seed / 233280;
-  }
-  for (let x = -3; x <= 3; x++) {
-    for (let z = -3; z <= 3; z++) {
-      if (Math.abs(x) <= 1 || Math.abs(z) <= 1) continue;
-      const bx = x * 25 + (rand() - 0.5) * 3;
-      const bz = z * 25 + (rand() - 0.5) * 3;
-      const w = 8 + rand() * 4, d = 8 + rand() * 4, h = 7 + rand() * 15;
-      const building = box(scene, w, h, d,
-        buildingMats[Math.floor(rand() * buildingMats.length)], bx, h / 2, bz);
-      // 건물 정면에 간단한 창문 띠
-      const windowMat = mat(0x91b9c8, 0.35, 0.15);
-      for (let yy = 2.2; yy < h - 1; yy += 3.2) {
-        box(scene, w * 0.72, 0.75, 0.06, windowMat, bx, yy, bz + d / 2 + 0.04);
+  window.addEventListener("keydown", function (e) {
+    const controlled = ["KeyW","KeyA","KeyS","KeyD","ArrowUp","ArrowDown",
+                        "ArrowLeft","ArrowRight","Space","KeyC"];
+    if (controlled.includes(e.code)) e.preventDefault();
+    keys[e.code] = true;
+    if (e.code === "Space") car.speed = 0;
+    if (e.code === "KeyC" && !e.repeat) {
+      cameraFollow = !cameraFollow;
+      setFollowButton();
+      if (!cameraFollow && viewer && typeof Cesium !== "undefined") {
+        viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
       }
     }
+  });
+  window.addEventListener("keyup", function (e) { keys[e.code] = false; });
+  window.addEventListener("blur", function () {
+    Object.keys(keys).forEach(k => keys[k] = false);
+  });
+
+  // 동서/남북 미터 오프셋을 경위도로 변환한다.
+  function offsetPosition(lon, lat, eastMeters, northMeters) {
+    const metersPerLon = 111320 * Math.cos(lat * Math.PI / 180);
+    return {
+      lon: lon + eastMeters / metersPerLon,
+      lat: lat + northMeters / 110540
+    };
   }
 
-  // 가로수
-  const trunkMat = mat(0x765034), leafMat = mat(0x397c45);
-  const trunkGeo = new T.CylinderGeometry(0.18, 0.24, 1.8, 6);
-  const leafGeo = new T.SphereGeometry(1.05, 7, 6);
-  for (let z = -85; z <= 85; z += 28) {
-    for (const x of [-12, 12]) {
-      const trunk = new T.Mesh(trunkGeo, trunkMat);
-      trunk.position.set(x, 0.9, z);
-      scene.add(trunk);
-      const crown = new T.Mesh(leafGeo, leafMat);
-      crown.position.set(x, 2.25, z);
-      scene.add(crown);
+  function makePart(name, dimensions, color, dx, dy, dz, steeringWheel) {
+    const pos = Cesium.Cartesian3.fromDegrees(car.lon, car.lat, startHeight + dz);
+    const entity = viewer.entities.add({
+      name: name,
+      position: pos,
+      orientation: Cesium.Transforms.headingPitchRollQuaternion(
+        pos, new Cesium.HeadingPitchRoll(car.heading, 0, 0)
+      ),
+      box: {
+        dimensions: new Cesium.Cartesian3(dimensions[0], dimensions[1], dimensions[2]),
+        material: Cesium.Color.fromCssColorString(color)
+      }
+    });
+    const part = { entity, dx, dy, dz, steeringWheel: !!steeringWheel, type: "box" };
+    carParts.push(part);
+    return part;
+  }
+
+  function makeWheel(name, dx, dy, front) {
+    const pos = Cesium.Cartesian3.fromDegrees(car.lon, car.lat, startHeight + 0.43);
+    const entity = viewer.entities.add({
+      name: name,
+      position: pos,
+      orientation: Cesium.Transforms.headingPitchRollQuaternion(
+        pos, new Cesium.HeadingPitchRoll(car.heading, 0, 0)
+      ),
+      ellipsoid: {
+        radii: new Cesium.Cartesian3(0.22, 0.40, 0.40),
+        material: Cesium.Color.fromCssColorString("#202328")
+      }
+    });
+    carParts.push({
+      entity, dx, dy, dz: 0.43, steeringWheel: front, type: "wheel"
+    });
+  }
+
+  function updateCarParts() {
+    for (const part of carParts) {
+      // 차체 방향에 맞춰 각 부품의 위치를 회전시킨다.
+      const east = part.dx * Math.cos(car.heading) + part.dy * Math.sin(car.heading);
+      const north = -part.dx * Math.sin(car.heading) + part.dy * Math.cos(car.heading);
+      const p = offsetPosition(car.lon, car.lat, east, north);
+      const pos = Cesium.Cartesian3.fromDegrees(p.lon, p.lat, startHeight + part.dz);
+      const h = car.heading + (part.steeringWheel ? car.steer : 0);
+      part.entity.position = pos;
+      part.entity.orientation = Cesium.Transforms.headingPitchRollQuaternion(
+        pos, new Cesium.HeadingPitchRoll(h, 0, 0)
+      );
     }
   }
 
-  // 자동차 모델: 앞쪽은 +Z 방향
-  const car = new T.Group();
-  scene.add(car);
+  function createCar() {
+    // 간단한 블록 형태의 자동차: 실제 지도 위에서 미터 단위 크기로 표현
+    makePart("자동차 차체", [1.85, 4.15, 0.72], "#c92e38", 0, 0, 0.68, false);
+    makePart("자동차 객실", [1.55, 1.95, 0.72], "#8fc4d8", 0, -0.20, 1.36, false);
+    makePart("자동차 앞부분", [1.72, 0.72, 0.20], "#a91f2a", 0, 1.55, 1.08, false);
 
-  const paint = mat(0xc92732, 0.32, 0.28);
-  const paintDark = mat(0x861b25, 0.4, 0.2);
-  const glass = mat(0x8fc5d8, 0.22, 0.18);
-  const dark = mat(0x171c22, 0.75);
-  const rubber = mat(0x17191c, 0.95);
-  const rim = mat(0xc6cbd0, 0.28, 0.75);
-  const lampMat = new T.MeshStandardMaterial({ color:0xfff0bd, emissive:0x665020 });
-  const tailMat = new T.MeshStandardMaterial({ color:0xe51e2a, emissive:0x5a0000 });
-
-  // 차체와 앞/뒤 범퍼
-  box(car, 2.05, 0.58, 3.8, paint, 0, 0.78, 0);
-  box(car, 1.92, 0.18, 0.22, dark, 0, 0.55, 1.92);
-  box(car, 1.92, 0.18, 0.22, dark, 0, 0.55, -1.92);
-  box(car, 1.72, 0.12, 0.55, paintDark, 0, 1.08, 1.48);
-
-  // 지붕과 객실
-  box(car, 1.62, 0.78, 1.85, paint, 0, 1.42, -0.25);
-  box(car, 1.49, 0.53, 0.08, glass, 0, 1.48, 0.72);   // 앞유리
-  box(car, 1.49, 0.50, 0.08, glass, 0, 1.48, -1.20);  // 뒷유리
-  box(car, 0.08, 0.48, 1.45, glass, -0.82, 1.47, -0.25);
-  box(car, 0.08, 0.48, 1.45, glass, 0.82, 1.47, -0.25);
-  box(car, 1.78, 0.10, 0.22, paintDark, 0, 1.86, -0.25);
-
-  // 사이드미러
-  box(car, 0.22, 0.12, 0.18, dark, -1.02, 1.35, 0.45);
-  box(car, 0.22, 0.12, 0.18, dark, 1.02, 1.35, 0.45);
-
-  // 전조등과 후미등
-  box(car, 0.38, 0.16, 0.08, lampMat, -0.68, 0.88, 1.94);
-  box(car, 0.38, 0.16, 0.08, lampMat, 0.68, 0.88, 1.94);
-  box(car, 0.38, 0.17, 0.08, tailMat, -0.68, 0.88, -1.94);
-  box(car, 0.38, 0.17, 0.08, tailMat, 0.68, 0.88, -1.94);
-
-  // 앞 그릴
-  box(car, 0.72, 0.20, 0.045, dark, 0, 0.72, 1.965);
-
-  // 바퀴는 회전축과 타이어/휠을 분리해 앞바퀴가 실제로 방향을 틀도록 구성
-  const wheelGeo = new T.CylinderGeometry(0.40, 0.40, 0.28, 16);
-  const rimGeo = new T.CylinderGeometry(0.22, 0.22, 0.292, 12);
-  const wheels = [];
-  const frontWheelPivots = [];
-
-  for (const x of [-1.03, 1.03]) {
-    for (const z of [-1.18, 1.18]) {
-      const pivot = new T.Group();
-      pivot.position.set(x, 0.43, z);
-      car.add(pivot);
-
-      const tire = new T.Mesh(wheelGeo, rubber);
-      tire.rotation.z = Math.PI / 2;
-      pivot.add(tire);
-
-      const wheelFace = new T.Mesh(rimGeo, rim);
-      wheelFace.rotation.z = Math.PI / 2;
-      wheelFace.position.x = (x < 0 ? -0.012 : 0.012);
-      pivot.add(wheelFace);
-
-      // 휠 중앙 허브
-      const hub = new T.Mesh(new T.CylinderGeometry(0.075, 0.075, 0.31, 10), dark);
-      hub.rotation.z = Math.PI / 2;
-      pivot.add(hub);
-
-      wheels.push(pivot);
-      if (z > 0) frontWheelPivots.push(pivot);
-    }
+    makeWheel("왼쪽 앞바퀴", -1.00, 1.28, true);
+    makeWheel("오른쪽 앞바퀴", 1.00, 1.28, true);
+    makeWheel("왼쪽 뒷바퀴", -1.00, -1.30, false);
+    makeWheel("오른쪽 뒷바퀴", 1.00, -1.30, false);
+    updateCarParts();
   }
 
-  const keys = Object.create(null);
-  let speed = 0;
-  let yaw = 0;
-  let steering = 0;
-  let orbit = 0;
-  let pitch = 0.2;
-  let distance = 10;
-  let dragging = false;
-  let lastX = 0, lastY = 0;
-
-  window.addEventListener("keydown", (e) => {
-    if (["KeyW","KeyA","KeyS","KeyD","Space","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.code)) {
-      e.preventDefault();
-    }
-    keys[e.code] = true;
-    if (e.code === "Space") speed = 0;
-  });
-  window.addEventListener("keyup", (e) => { keys[e.code] = false; });
-  window.addEventListener("blur", () => {
-    for (const k in keys) keys[k] = false;
-  });
-
-  renderer.domElement.addEventListener("pointerdown", (e) => {
-    dragging = true;
-    lastX = e.clientX; lastY = e.clientY;
-    renderer.domElement.setPointerCapture(e.pointerId);
-  });
-  renderer.domElement.addEventListener("pointerup", () => { dragging = false; });
-  renderer.domElement.addEventListener("pointercancel", () => { dragging = false; });
-  renderer.domElement.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
-    orbit -= (e.clientX - lastX) * 0.006;
-    pitch = Math.max(-0.05, Math.min(0.8, pitch + (e.clientY - lastY) * 0.004));
-    lastX = e.clientX; lastY = e.clientY;
-  });
-  renderer.domElement.addEventListener("wheel", (e) => {
-    distance = Math.max(5, Math.min(20, distance + e.deltaY * 0.01));
-  }, { passive: true });
-
-  const speedText = document.getElementById("speed");
-  const dirText = document.getElementById("dir");
-  const steerText = document.getElementById("steer");
-  const directions = ["북쪽","북동쪽","동쪽","남동쪽","남쪽","남서쪽","서쪽","북서쪽"];
-  const clock = new T.Clock();
-
-  function animate() {
+  function animate(time) {
     requestAnimationFrame(animate);
-    const dt = Math.min(clock.getDelta(), 0.04);
+    if (!viewer || typeof Cesium === "undefined") return;
+    if (!lastTime) lastTime = time;
+    const dt = Math.min((time - lastTime) / 1000, 0.04);
+    lastTime = time;
 
-    if (keys.KeyW || keys.ArrowUp) speed = Math.min(10, speed + 5 * dt);
-    else if (keys.KeyS || keys.ArrowDown) speed = Math.max(-5, speed - 5 * dt);
-    else speed *= Math.pow(0.94, dt * 60);
+    if (keys.KeyW || keys.ArrowUp) car.speed = Math.min(13.9, car.speed + 4.0 * dt);
+    else if (keys.KeyS || keys.ArrowDown) car.speed = Math.max(-4.0, car.speed - 4.0 * dt);
+    else car.speed *= Math.pow(0.94, dt * 60);
 
-    // A/D 입력으로 앞바퀴 조향각을 부드럽게 변경
-    let steerTarget = 0;
-    if (keys.KeyA || keys.ArrowLeft) steerTarget = 0.52;
-    if (keys.KeyD || keys.ArrowRight) steerTarget = -0.52;
-    steering += (steerTarget - steering) * Math.min(1, dt * 9);
+    let targetSteer = 0;
+    if (keys.KeyA || keys.ArrowLeft) targetSteer = -0.48;
+    if (keys.KeyD || keys.ArrowRight) targetSteer = 0.48;
+    car.steer += (targetSteer - car.steer) * Math.min(1, dt * 8);
 
-    // 앞바퀴의 회전 방향과 차체의 회전 방향을 일치시킴
-    if (Math.abs(speed) > 0.03) {
-      yaw += steering * 1.9 * dt * (speed < 0 ? -1 : 1);
-    }
-    car.rotation.y = yaw;
-    car.position.x = Math.max(-103, Math.min(103, car.position.x + Math.sin(yaw) * speed * dt));
-    car.position.z = Math.max(-103, Math.min(103, car.position.z + Math.cos(yaw) * speed * dt));
-
-    // 앞바퀴만 좌우로 꺾이고, 모든 바퀴는 주행에 따라 회전
-    for (const wheel of wheels) {
-      wheel.rotation.x -= speed * dt / 0.4;
-    }
-    for (const frontWheel of frontWheelPivots) {
-      frontWheel.rotation.y = steering;
+    // 휠베이스 2.7m인 간단한 자전거 모델로 차체 방향을 계산
+    if (Math.abs(car.speed) > 0.02) {
+      car.heading += (car.speed / 2.7) * Math.tan(car.steer) * dt;
     }
 
-    const angle = yaw + orbit;
-    const horizontal = distance * Math.cos(pitch);
-    camera.position.set(
-      car.position.x - Math.sin(angle) * horizontal,
-      2.1 + distance * Math.sin(pitch),
-      car.position.z - Math.cos(angle) * horizontal
-    );
-    camera.lookAt(car.position.x, 1, car.position.z);
+    const east = Math.sin(car.heading) * car.speed * dt;
+    const north = Math.cos(car.heading) * car.speed * dt;
+    const next = offsetPosition(car.lon, car.lat, east, north);
+    car.lon = next.lon;
+    car.lat = next.lat;
 
-    speedText.textContent = Math.round(Math.abs(speed) * 12);
-    const deg = ((yaw * 180 / Math.PI) % 360 + 360) % 360;
-    dirText.textContent = directions[Math.round(deg / 45) % 8];
-    steerText.textContent = Math.round(steering * 180 / Math.PI);
-    renderer.render(scene, camera);
+    updateCarParts();
+
+    const kmh = Math.round(Math.abs(car.speed) * 3.6);
+    const dirs = ["북쪽","북동쪽","동쪽","남동쪽","남쪽","남서쪽","서쪽","북서쪽"];
+    const degrees = ((car.heading * 180 / Math.PI) % 360 + 360) % 360;
+    document.getElementById("speed").textContent = kmh;
+    document.getElementById("direction").textContent = dirs[Math.round(degrees / 45) % 8];
+    document.getElementById("steering").textContent =
+      Math.round(car.steer * 180 / Math.PI);
+
+    if (cameraFollow) {
+      const target = Cesium.Cartesian3.fromDegrees(car.lon, car.lat, 0);
+      viewer.camera.lookAt(
+        target,
+        new Cesium.HeadingPitchRange(car.heading, Cesium.Math.toRadians(-32), 34)
+      );
+    }
   }
 
-  animate();
+  // 브이월드 3D 지도가 준비된 뒤 지도 내부의 Cesium Viewer에 자동차를 추가
+  vw.ws3dInitCallBack = function () {
+    try {
+      // 브이월드 공식 예제에서 사용하는 Cesium Viewer 접근 방식
+      viewer = ws3d.viewer;
+      if (!viewer) {
+        showError("브이월드 지도 Viewer를 찾지 못했습니다. 인증키와 3D 지도 초기화 상태를 확인해 주세요.");
+        return;
+      }
 
-  function resize() {
-    const width = Math.max(1, root.clientWidth);
-    camera.aspect = width / 650;
-    camera.updateProjectionMatrix();
-    renderer.setSize(width, 650);
-  }
-  window.addEventListener("resize", resize);
+      // 브이월드 기본 3D 건물 레이어를 표시한다.
+      try {
+        const buildingLayer = map.getElementById("facility_build");
+        if (buildingLayer && buildingLayer.show) buildingLayer.show();
+      } catch (e) {
+        // 기본 설정에서 건물 레이어가 이미 표시 중일 수 있다.
+      }
+
+      createCar();
+      setFollowButton();
+      requestAnimationFrame(animate);
+    } catch (err) {
+      showError("자동차 생성 중 오류가 발생했습니다: " + err.message);
+    }
+  };
+
+  map.start();
+
+  // 초기화가 지연되거나 콜백이 오지 않을 때 사용자에게 상태를 알린다.
+  setTimeout(function () {
+    if (!viewer && errorBox.style.display !== "block") {
+      showError("브이월드 지도 초기화가 오래 걸리고 있습니다. 인증키의 서비스 URL에 car-drive-ty2kofhslkkbneko5hrhmm.streamlit.app 도메인이 등록되어 있는지 확인해 주세요.");
+    }
+  }, 18000);
 })();
 </script>
 </body>
 </html>
 """
-components.html(html, height=670, scrolling=False)
+
+html = html.replace("__VWORLD_KEY__", encoded_key)
+components.html(html, height=730, scrolling=False)

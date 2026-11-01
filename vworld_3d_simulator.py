@@ -28,7 +28,8 @@ if not str(api_key).strip():
     st.stop()
 
 encoded_key = quote(str(api_key).strip(), safe="")
-
+st.write("API 키 읽기 여부:", bool(encoded_key))
+st.write("API 키 길이:", len(encoded_key))
 html = r"""
 <!DOCTYPE html>
 <html lang="ko">

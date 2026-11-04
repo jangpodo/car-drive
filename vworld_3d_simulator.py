@@ -284,31 +284,29 @@ const buildingMaterials = [
     0xd0c6b5, 0x9ba8ad, 0xb5c1b4
 ].map(c => new THREE.MeshLambertMaterial({ color: c }));
 
+// 각 건물을 도로와 도로 사이 블록 중앙에 배치
+// 도로 중심은 40 단위 간격, 도로 폭은 12 단위이므로
+// 건물은 도로 위가 아닌 블록 내부에 생성됨
 for (let x = -180; x <= 180; x += ROAD_SPACING) {
     for (let z = -180; z <= 180; z += ROAD_SPACING) {
+        const bx = x;
+        const bz = z;
 
-        // 도로와 도로 사이 블록 중심
-        const bx = x + 20;
-        const bz = z + 20;
-
-        if (bx > 190 || bz > 190) continue;
-
-        const width = 17 + Math.random() * 8;
-        const depth = 17 + Math.random() * 8;
+        const width = 10 + Math.random() * 7;
+        const depth = 10 + Math.random() * 7;
         const height = 8 + Math.random() * 35;
 
-        const material =
-            buildingMaterials[
-                Math.floor(Math.random() * buildingMaterials.length)
-            ];
+        const material = buildingMaterials[
+            Math.floor(Math.random() * buildingMaterials.length)
+        ];
 
         box(
-            bx, height/2, bz,
+            bx, height / 2, bz,
             width, height, depth,
             material
         );
 
-        // 간단한 옥상 장식
+        // 일부 건물에 간단한 옥상 장식 추가
         if (Math.random() > 0.7) {
             box(
                 bx, height + 1, bz,
@@ -320,6 +318,7 @@ for (let x = -180; x <= 180; x += ROAD_SPACING) {
 }
 
 // ================================
+
 // 자동차 생성
 // ================================
 

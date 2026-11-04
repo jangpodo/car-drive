@@ -287,10 +287,11 @@ const buildingMaterials = [
 // 각 건물을 도로와 도로 사이 블록 중앙에 배치
 // 도로 중심은 40 단위 간격, 도로 폭은 12 단위이므로
 // 건물은 도로 위가 아닌 블록 내부에 생성됨
-for (let x = -180; x <= 180; x += ROAD_SPACING) {
-    for (let z = -180; z <= 180; z += ROAD_SPACING) {
-        const bx = x;
-        const bz = z;
+for (let x = -200; x < 200; x += ROAD_SPACING) {
+    for (let z = -200; z < 200; z += ROAD_SPACING) {
+        // 건물은 도로 중심(40의 배수)에서 20만큼 떨어진 블록 중앙에 배치
+        const bx = x + 20;
+        const bz = z + 20;
 
         const width = 10 + Math.random() * 7;
         const depth = 10 + Math.random() * 7;

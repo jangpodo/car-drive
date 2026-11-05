@@ -1,574 +1,144 @@
-
 import streamlit as st
 import streamlit.components.v1 as components
+import requests, math, json
 
-st.set_page_config(
-    page_title="서울 미니 3D 운전 시뮬레이터",
-    page_icon="🚗",
-    layout="wide"
-)
+st.set_page_config(page_title="실제 도시 3D 운전", layout="wide")
+st.title("🚗 실제 도시 기반 3D 운전 시뮬레이터")
+st.caption("OpenStreetMap 도로·건물 데이터를 기반으로 실제 지형을 1/10 축척으로 표현합니다.")
 
-st.title("🚗 서울 미니 3D 운전 시뮬레이터")
-st.caption("저사양 그래픽 · 도로 주행 · 3인칭 카메라")
+place = st.sidebar.text_input("도시/주소 입력", "서울특별시 강남구")
+radius = st.sidebar.select_slider("지도 범위 반경", options=[500, 750, 1000, 1500, 2000], value=1000)
+load = st.sidebar.button("도시 불러오기", type="primary")
 
-html = r"""
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+@st.cache_data(ttl=3600)
+def geocode(q):
+    r=requests.get("https://nominatim.openstreetmap.org/search",
+        params={"q":q,"format":"json","limit":1},
+        headers={"User-Agent":"Student3DDrivingSimulator/1.0"},timeout=25)
+    r.raise_for_status()
+    a=r.json()
+    if not a: raise ValueError("장소를 찾지 못했습니다. 더 구체적인 주소를 입력하세요.")
+    return float(a[0]["lat"]),float(a[0]["lon"]),a[0]["display_name"]
 
-<style>
-html, body {
-    margin: 0;
-    padding: 0;
-    overflow: hidden;
-    background: #b9d3df;
-    font-family: Arial, sans-serif;
-}
+@st.cache_data(ttl=3600)
+def get_osm(lat,lon,r):
+    dlat=r/111320
+    dlon=r/(111320*max(math.cos(math.radians(lat)),.2))
+    s,w,n,e=lat-dlat,lon-dlon,lat+dlat,lon+dlon
+    q=f'''[out:json][timeout:90];(
+    way["highway"~"motorway|trunk|primary|secondary|tertiary|motorway_link|trunk_link|primary_link|secondary_link"]({s},{w},{n},{e});
+    way["building"]({s},{w},{n},{e});
+    way["waterway"~"river|canal"]({s},{w},{n},{e});
+    way["natural"="water"]({s},{w},{n},{e});
+    );out body geom;'''
+    err=None
+    for url in ["https://overpass-api.de/api/interpreter","https://overpass.kumi.systems/api/interpreter"]:
+        try:
+            x=requests.post(url,data=q,headers={"User-Agent":"Student3DDrivingSimulator/1.0"},timeout=110)
+            x.raise_for_status()
+            return x.json()
+        except Exception as ex: err=ex
+    raise RuntimeError(f"OSM 요청 실패: {err}")
 
-#game {
-    width: 100%;
-    height: 650px;
-    position: relative;
-    overflow: hidden;
-}
+def convert(data,lat,lon):
+    out={"roads":[],"buildings":[],"water":[]}
+    fx=111320*math.cos(math.radians(lat)); fz=111320
+    for el in data.get("elements",[]):
+        tags=el.get("tags",{}); g=el.get("geometry",[])
+        if len(g)<2: continue
+        pts=[[(p["lon"]-lon)*fx*.1,-(p["lat"]-lat)*fz*.1] for p in g]
+        if "highway" in tags:
+            hw=tags.get("highway","")
+            try: lanes=int(str(tags.get("lanes","0")).split(";")[0])
+            except: lanes=0
+            # 명시적 4차선 이상 또는 차로 정보가 없는 motorway/trunk 간선
+            if lanes>=4 or (lanes==0 and hw in ("motorway","trunk","motorway_link","trunk_link")):
+                try: width=float(str(tags.get("width","")).replace("m","").strip())*.1
+                except: width=max(1.4, lanes*3.5*.1 if lanes else 1.5)
+                out["roads"].append({"p":pts,"w":max(width,1.2),"bridge":tags.get("bridge")=="yes","name":tags.get("name",hw)})
+        elif "building" in tags and len(pts)>=3:
+            try: h=float(str(tags.get("height","25")).replace("m","").strip())*.1
+            except: h=2.5
+            out["buildings"].append({"p":pts,"h":max(2.5,h)})
+        elif "waterway" in tags or "natural" in tags:
+            out["water"].append({"p":pts})
+    return out
 
-#hud {
-    position: absolute;
-    z-index: 5;
-    top: 10px;
-    left: 10px;
-    background: rgba(15, 25, 35, 0.85);
-    color: white;
-    padding: 12px;
-    border-radius: 8px;
-    font-size: 14px;
-    line-height: 1.7;
-}
+if "citydata" not in st.session_state: st.session_state.citydata=None
+if load:
+    try:
+        with st.spinner("실제 지도 데이터를 가져오는 중..."):
+            lat,lon,name=geocode(place)
+            raw=get_osm(lat,lon,radius)
+            st.session_state.citydata=convert(raw,lat,lon)
+            st.session_state.cityname=name
+    except Exception as e: st.error(str(e))
 
-#message {
-    color: #ffe082;
-}
-
-#controls {
-    position: absolute;
-    z-index: 5;
-    bottom: 15px;
-    left: 50%;
-    transform: translateX(-50%);
-    display: flex;
-    gap: 8px;
-}
-
-button {
-    border: 0;
-    border-radius: 8px;
-    padding: 13px 18px;
-    font-size: 18px;
-    font-weight: bold;
-    background: rgba(20, 35, 50, 0.88);
-    color: white;
-    cursor: pointer;
-    user-select: none;
-}
-
-button:active {
-    background: #e49a31;
-}
-
-#help {
-    position: absolute;
-    right: 10px;
-    top: 10px;
-    z-index: 5;
-    background: rgba(15,25,35,0.8);
-    color: white;
-    padding: 10px;
-    border-radius: 8px;
-    font-size: 12px;
-}
-</style>
-
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script>
-</head>
-
-<body>
-<div id="game">
-    <div id="hud">
-        <b>서울 미니 드라이빙</b><br>
-        속도: <span id="speed">0</span> km/h<br>
-        구역: <span id="zone">서울 미니 시가지</span><br>
-        <span id="message">도로 위에서 주행하세요.</span>
-    </div>
-
-    <div id="help">
-        W / ↑ : 전진<br>
-        S / ↓ : 후진<br>
-        A / ← : 좌회전<br>
-        D / → : 우회전<br>
-        회전은 교차로에서 가능
-    </div>
-
-    <div id="controls">
-        <button id="left">↶</button>
-        <button id="forward">▲</button>
-        <button id="backward">▼</button>
-        <button id="right">↷</button>
-    </div>
-</div>
-
+if st.session_state.citydata:
+    data=st.session_state.citydata
+    st.success(st.session_state.cityname)
+    st.write(f"도로 {len(data['roads'])}개 · 건물 {len(data['buildings'])}개 · 물길 {len(data['water'])}개")
+    st.caption("조작: W/S 가속·후진, A/D 자유 조향. 교차로 회전 제한 없음.")
+    html=r'''<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>body{margin:0;overflow:hidden;font-family:Arial}#game{height:700px;position:relative}
+#hud,#help{position:absolute;z-index:4;background:#18212ddd;color:white;padding:10px;border-radius:8px}
+#hud{top:10px;left:10px}#help{top:10px;right:10px;font-size:12px}
+#buttons{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:5;display:flex;gap:6px}
+button{font-size:18px;padding:12px;background:#18212ddd;color:white;border:0;border-radius:8px;touch-action:none}</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script></head><body>
+<div id="game"><div id="hud">속도 <span id="spd">0</span> km/h<br><span id="msg">도로 위에서 주행하세요.</span></div>
+<div id="help">W/S: 가속·후진<br>A/D: 자유 조향<br>방향키도 가능</div>
+<div id="buttons"><button id="l">◀</button><button id="f">▲</button><button id="b">▼</button><button id="r">▶</button></div></div>
 <script>
-(function () {
-"use strict";
-
-const game = document.getElementById("game");
-const speedText = document.getElementById("speed");
-const messageText = document.getElementById("message");
-
-if (!window.THREE) {
-    messageText.textContent = "3D 라이브러리 로딩 실패. 인터넷 연결을 확인하세요.";
-    return;
+const D=__DATA__;const game=document.getElementById('game'),msg=document.getElementById('msg');
+const scene=new THREE.Scene();scene.background=new THREE.Color(0xcbd2d6);scene.fog=new THREE.Fog(0xcbd2d6,200,700);
+const camera=new THREE.PerspectiveCamera(65,game.clientWidth/game.clientHeight,.1,2000);
+const renderer=new THREE.WebGLRenderer({antialias:false,powerPreference:'low-power'});
+renderer.setPixelRatio(Math.min(devicePixelRatio,1.2));renderer.setSize(game.clientWidth,game.clientHeight);game.insertBefore(renderer.domElement,game.firstChild);
+scene.add(new THREE.HemisphereLight(0xffffff,0x777777,2));const sun=new THREE.DirectionalLight(0xffffff,1);sun.position.set(100,200,100);scene.add(sun);
+const material=c=>new THREE.MeshLambertMaterial({color:c});
+const gray=material(0x858585),roadmat=material(0x363636),watermat=material(0x6c8997),green=material(0x687568),trunkmat=material(0x554c43);
+const ground=new THREE.Mesh(new THREE.PlaneGeometry(4000,4000),material(0x9b9f98));ground.rotation.x=-Math.PI/2;ground.position.y=-.2;scene.add(ground);
+function road(points,width,mat,y=.02){
+ for(let i=0;i<points.length-1;i++){let a=points[i],b=points[i+1],dx=b[0]-a[0],dz=b[1]-a[1],len=Math.hypot(dx,dz);if(len<.1)continue;
+ let m=new THREE.Mesh(new THREE.PlaneGeometry(width,len),mat);m.rotation.x=-Math.PI/2;m.rotation.z=Math.atan2(dx,dz);m.position.set((a[0]+b[0])/2,y,(a[1]+b[1])/2);scene.add(m);}
 }
-
-// ================================
-// 저사양 렌더링 설정
-// ================================
-
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xb9d3df);
-scene.fog = new THREE.Fog(0xb9d3df, 180, 450);
-
-const camera = new THREE.PerspectiveCamera(
-    65,
-    game.clientWidth / game.clientHeight,
-    0.1,
-    600
-);
-
-const renderer = new THREE.WebGLRenderer({
-    antialias: false,
-    powerPreference: "low-power"
-});
-
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1));
-renderer.setSize(game.clientWidth, game.clientHeight);
-renderer.shadowMap.enabled = false;
-
-game.insertBefore(renderer.domElement, game.firstChild);
-
-scene.add(new THREE.HemisphereLight(0xffffff, 0x667766, 2));
-
-const sun = new THREE.DirectionalLight(0xffffff, 1.2);
-sun.position.set(100, 150, 100);
-scene.add(sun);
-
-// ================================
-// 재사용 재질
-// ================================
-
-const materials = {
-    grass: new THREE.MeshLambertMaterial({ color: 0x86a96b }),
-    road: new THREE.MeshLambertMaterial({ color: 0x41464c }),
-    line: new THREE.MeshLambertMaterial({ color: 0xd8d5c7 }),
-    river: new THREE.MeshLambertMaterial({ color: 0x4b9cc7 }),
-    bridge: new THREE.MeshLambertMaterial({ color: 0x777c80 }),
-    rail: new THREE.MeshLambertMaterial({ color: 0x92999d }),
-    car: new THREE.MeshLambertMaterial({ color: 0xe33b32 }),
-    window: new THREE.MeshLambertMaterial({ color: 0x8eb8cc }),
-    wheel: new THREE.MeshLambertMaterial({ color: 0x222222 })
-};
-
-function box(x, y, z, sx, sy, sz, material) {
-    const mesh = new THREE.Mesh(
-        new THREE.BoxGeometry(sx, sy, sz),
-        material
-    );
-    mesh.position.set(x, y, z);
-    scene.add(mesh);
-    return mesh;
+function building(p,h){
+ const s=new THREE.Shape();s.moveTo(p[0][0],p[0][1]);for(let i=1;i<p.length;i++)s.lineTo(p[i][0],p[i][1]);s.closePath();
+ const g=new THREE.ExtrudeGeometry(s,{depth:h,bevelEnabled:false});g.rotateX(-Math.PI/2);scene.add(new THREE.Mesh(g,gray));
 }
-
-// ================================
-// 도시 설정
-// ================================
-
-const CITY_LIMIT = 200;
-const ROAD_SPACING = 40;
-const ROAD_WIDTH = 12;
-const HALF_ROAD = ROAD_WIDTH / 2;
-
-// 도시 바닥
-box(0, -0.7, 0, 420, 1, 420, materials.grass);
-
-// 한강: z축 방향으로 흐르는 강
-box(0, -0.15, 0, 420, 0.25, 28, materials.river);
-
-// 도로망 생성
-for (let i = -5; i <= 5; i++) {
-    const p = i * ROAD_SPACING;
-
-    // 세로 방향 도로
-    box(p, -0.25, 0, ROAD_WIDTH, 0.3, 420, materials.road);
-
-    // 가로 방향 도로
-    box(0, -0.25, p, 420, 0.3, ROAD_WIDTH, materials.road);
+function tree(x,z){let t=new THREE.Mesh(new THREE.CylinderGeometry(.07,.1,.55,5),trunkmat);t.position.set(x,.28,z);scene.add(t);
+ let c=new THREE.Mesh(new THREE.ConeGeometry(.42,.9,5),green);c.position.set(x,.95,z);scene.add(c);}
+for(const r of D.roads){road(r.p,r.w,roadmat,r.bridge?.12:.02);
+ for(let i=0;i<r.p.length-1;i++){let a=r.p[i],b=r.p[i+1],dx=b[0]-a[0],dz=b[1]-a[1],len=Math.hypot(dx,dz);if(len<8)continue;
+ let nx=-dz/len,nz=dx/len;for(let t=10;t<len;t+=22){let x=a[0]+dx*t/len,z=a[1]+dz*t/len;
+ tree(x+nx*(r.w/2+1),z+nz*(r.w/2+1));tree(x-nx*(r.w/2+1),z-nz*(r.w/2+1));}}
 }
-
-// 한강 다리: 도로가 강을 건너는 부분
-for (let x = -160; x <= 160; x += ROAD_SPACING) {
-    box(x, 0.05, 0, ROAD_WIDTH, 0.4, 28, materials.bridge);
-}
-
-// 도로 중앙선
-for (let i = -5; i <= 5; i++) {
-    const p = i * ROAD_SPACING;
-
-    for (let z = -190; z <= 190; z += 18) {
-        box(p, -0.06, z, 0.25, 0.05, 5, materials.line);
-    }
-
-    for (let x = -190; x <= 190; x += 18) {
-        box(x, -0.06, p, 5, 0.05, 0.25, materials.line);
-    }
-}
-
-// ================================
-// 낮은 가드레일
-// 교차로 부분은 비워서 회전 가능
-// ================================
-
-function makeRail(x, z, length, alongX) {
-    const railHeight = 0.65;
-    const railY = railHeight / 2;
-
-    if (alongX) {
-        box(x, railY, z, length, 0.12, 0.18, materials.rail);
-
-        for (let p = -length/2; p <= length/2; p += 4) {
-            box(x + p, railY/2, z, 0.12, railHeight, 0.12, materials.rail);
-        }
-    } else {
-        box(x, railY, z, 0.18, 0.12, length, materials.rail);
-
-        for (let p = -length/2; p <= length/2; p += 4) {
-            box(x, railY/2, z + p, 0.12, railHeight, 0.12, materials.rail);
-        }
-    }
-}
-
-// 도로 사이 구간에만 가드레일 배치
-for (let i = -5; i < 5; i++) {
-    for (let j = -5; j < 5; j++) {
-        const x = i * ROAD_SPACING;
-        const z = j * ROAD_SPACING;
-
-        const segment = ROAD_SPACING - ROAD_WIDTH;
-
-        // 세로 도로 양옆
-        makeRail(x - HALF_ROAD - 0.3, z + 20, segment, false);
-        makeRail(x + HALF_ROAD + 0.3, z + 20, segment, false);
-
-        // 가로 도로 양옆
-        makeRail(x + 20, z - HALF_ROAD - 0.3, segment, true);
-        makeRail(x + 20, z + HALF_ROAD + 0.3, segment, true);
-    }
-}
-
-// ================================
-// 저폴리곤 건물
-// ================================
-
-const buildingMaterials = [
-    0xb9b5ae, 0xc8c3ba, 0xa7b4bd,
-    0xd0c6b5, 0x9ba8ad, 0xb5c1b4
-].map(c => new THREE.MeshLambertMaterial({ color: c }));
-
-// 각 건물을 도로와 도로 사이 블록 중앙에 배치
-// 도로 중심은 40 단위 간격, 도로 폭은 12 단위이므로
-// 건물은 도로 위가 아닌 블록 내부에 생성됨
-for (let x = -200; x < 200; x += ROAD_SPACING) {
-    for (let z = -200; z < 200; z += ROAD_SPACING) {
-        // 건물은 도로 중심(40의 배수)에서 20만큼 떨어진 블록 중앙에 배치
-        const bx = x + 20;
-        const bz = z + 20;
-
-        const width = 10 + Math.random() * 7;
-        const depth = 10 + Math.random() * 7;
-        const height = 8 + Math.random() * 35;
-
-        const material = buildingMaterials[
-            Math.floor(Math.random() * buildingMaterials.length)
-        ];
-
-        box(
-            bx, height / 2, bz,
-            width, height, depth,
-            material
-        );
-
-        // 일부 건물에 간단한 옥상 장식 추가
-        if (Math.random() > 0.7) {
-            box(
-                bx, height + 1, bz,
-                width * 0.3, 2, depth * 0.3,
-                materials.bridge
-            );
-        }
-    }
-}
-
-// ================================
-
-// 자동차 생성
-// ================================
-
-const car = new THREE.Group();
-scene.add(car);
-
-const body = new THREE.Mesh(
-    new THREE.BoxGeometry(2.3, 1, 4.2),
-    materials.car
-);
-body.position.y = 1;
-car.add(body);
-
-const cabin = new THREE.Mesh(
-    new THREE.BoxGeometry(1.7, 0.8, 2),
-    materials.window
-);
-cabin.position.set(0, 1.85, -0.2);
-car.add(cabin);
-
-// 바퀴
-for (const x of [-1.15, 1.15]) {
-    for (const z of [-1.35, 1.35]) {
-        const wheel = new THREE.Mesh(
-            new THREE.BoxGeometry(0.35, 0.65, 0.8),
-            materials.wheel
-        );
-        wheel.position.set(x, 0.45, z);
-        car.add(wheel);
-    }
-}
-
-// 자동차 시작 위치
-car.position.set(0, 0, 80);
-
-// 방향: +Z
-let direction = 0;
-let speed = 0;
-const MAX_SPEED = 24;
-const ACCEL = 18;
-const BRAKE = 25;
-
-const keys = {};
-let touchForward = false;
-let touchBackward = false;
-let touchLeft = false;
-let touchRight = false;
-
-window.addEventListener("keydown", e => {
-    keys[e.key.toLowerCase()] = true;
-});
-
-window.addEventListener("keyup", e => {
-    keys[e.key.toLowerCase()] = false;
-});
-
-function bindButton(id, setter) {
-    const button = document.getElementById(id);
-
-    button.addEventListener("pointerdown", e => {
-        e.preventDefault();
-        setter(true);
-    });
-
-    button.addEventListener("pointerup", () => setter(false));
-    button.addEventListener("pointerleave", () => setter(false));
-    button.addEventListener("pointercancel", () => setter(false));
-}
-
-bindButton("forward", v => touchForward = v);
-bindButton("backward", v => touchBackward = v);
-bindButton("left", v => touchLeft = v);
-bindButton("right", v => touchRight = v);
-
-// ================================
-// 도로 판정
-// ================================
-
-function nearestRoad(v) {
-    return Math.round(v / ROAD_SPACING) * ROAD_SPACING;
-}
-
-function isOnRoad(x, z) {
-    const roadX = Math.abs(x - nearestRoad(x)) <= HALF_ROAD - 1;
-    const roadZ = Math.abs(z - nearestRoad(z)) <= HALF_ROAD - 1;
-
-    // 도로 교차점 또는 도로 위
-    const onRoad = roadX || roadZ;
-
-    // 강은 다리 위치에서만 건널 수 있음
-    const inRiver = Math.abs(z) < 14;
-    const onBridge = roadX;
-
-    if (inRiver && !onBridge) return false;
-
-    return onRoad;
-}
-
-function isIntersection(x, z) {
-    const dx = Math.abs(x - nearestRoad(x));
-    const dz = Math.abs(z - nearestRoad(z));
-
-    return dx < 3.5 && dz < 3.5;
-}
-
-// ================================
-// 회전
-// ================================
-
-function tryTurn(turn) {
-    if (!isIntersection(car.position.x, car.position.z)) {
-        messageText.textContent = "교차로에서만 방향을 바꿀 수 있습니다.";
-        return;
-    }
-
-    // 교차로 중심에 정렬
-    car.position.x = nearestRoad(car.position.x);
-    car.position.z = nearestRoad(car.position.z);
-
-    direction = (direction + turn + 4) % 4;
-    car.rotation.y = direction * Math.PI / 2;
-
-    messageText.textContent = "방향 전환 완료";
-}
-
-// ================================
-// 카메라
-// ================================
-
-const cameraTarget = new THREE.Vector3();
-
-function updateCamera() {
-    const angle = car.rotation.y;
-
-    const offset = new THREE.Vector3(
-        -Math.sin(angle) * 13,
-        7,
-        -Math.cos(angle) * 13
-    );
-
-    const desired = car.position.clone().add(offset);
-
-    camera.position.lerp(desired, 0.08);
-
-    cameraTarget.set(
-        car.position.x,
-        car.position.y + 1.2,
-        car.position.z
-    );
-
-    camera.lookAt(cameraTarget);
-}
-
-camera.position.set(0, 8, 95);
-camera.lookAt(car.position);
-
-// ================================
-// 주행 업데이트
-// ================================
-
-let lastTime = performance.now();
-let turnCooldown = 0;
-
-function animate(now) {
-    requestAnimationFrame(animate);
-
-    const dt = Math.min((now - lastTime) / 1000, 0.05);
-    lastTime = now;
-
-    const forward = keys["w"] || keys["arrowup"] || touchForward;
-    const backward = keys["s"] || keys["arrowdown"] || touchBackward;
-    const left = keys["a"] || keys["arrowleft"] || touchLeft;
-    const right = keys["d"] || keys["arrowright"] || touchRight;
-
-    if (forward) {
-        speed = Math.min(MAX_SPEED, speed + ACCEL * dt);
-    } else if (backward) {
-        speed = Math.max(-MAX_SPEED / 2, speed - BRAKE * dt);
-    } else {
-        speed *= Math.pow(0.92, dt * 60);
-    }
-
-    turnCooldown -= dt;
-
-    if (turnCooldown <= 0) {
-        if (left) {
-            tryTurn(-1);
-            turnCooldown = 0.35;
-        } else if (right) {
-            tryTurn(1);
-            turnCooldown = 0.35;
-        }
-    }
-
-    // 자동차 이동 방향
-    let dx = 0;
-    let dz = 0;
-
-    if (direction === 0) dz = 1;
-    if (direction === 1) dx = 1;
-    if (direction === 2) dz = -1;
-    if (direction === 3) dx = -1;
-
-    const nextX = car.position.x + dx * speed * dt;
-    const nextZ = car.position.z + dz * speed * dt;
-
-    if (isOnRoad(nextX, nextZ)) {
-        car.position.x = nextX;
-        car.position.z = nextZ;
-        messageText.textContent = "도로 주행 중";
-    } else {
-        speed = 0;
-        messageText.textContent = "도로 밖으로 이동할 수 없습니다!";
-    }
-
-    // 도시 경계
-    car.position.x = THREE.MathUtils.clamp(
-        car.position.x, -CITY_LIMIT + 5, CITY_LIMIT - 5
-    );
-
-    car.position.z = THREE.MathUtils.clamp(
-        car.position.z, -CITY_LIMIT + 5, CITY_LIMIT - 5
-    );
-
-    speedText.textContent = Math.round(Math.abs(speed) * 3.6);
-
-    updateCamera();
-
-    renderer.render(scene, camera);
-}
-
-requestAnimationFrame(animate);
-
-// 화면 크기 변경
-window.addEventListener("resize", function () {
-    camera.aspect = game.clientWidth / game.clientHeight;
-    camera.updateProjectionMatrix();
-
-    renderer.setSize(game.clientWidth, game.clientHeight);
-});
-
-})();
-</script>
-</body>
-</html>
-"""
-
-components.html(
-    html,
-    height=660,
-    scrolling=False
-)
+for(const b of D.buildings)if(b.p.length>=3)building(b.p,b.h);
+for(const w of D.water)road(w.p,4,watermat,-.05);
+const car=new THREE.Group();scene.add(car);const body=new THREE.Mesh(new THREE.BoxGeometry(1.5,.6,3),material(0x9a3535));body.position.y=.55;car.add(body);
+const cabin=new THREE.Mesh(new THREE.BoxGeometry(1.1,.5,1.3),material(0x777f83));cabin.position.set(0,1,-.2);car.add(cabin);
+for(let x of [-.78,.78])for(let z of [-.95,.95]){let w=new THREE.Mesh(new THREE.BoxGeometry(.22,.45,.5),material(0x222222));w.position.set(x,.3,z);car.add(w);}
+function segdist(x,z,a,b){let vx=b[0]-a[0],vz=b[1]-a[1],l=vx*vx+vz*vz,t=l?Math.max(0,Math.min(1,((x-a[0])*vx+(z-a[1])*vz)/l)):0;return Math.hypot(x-a[0]-t*vx,z-a[1]-t*vz);}
+function onroad(x,z){for(let r of D.roads)for(let i=0;i<r.p.length-1;i++)if(segdist(x,z,r.p[i],r.p[i+1])<r.w/2+.35)return true;return false;}
+let start=D.roads.find(r=>r.p.length>1)?.p[Math.floor((D.roads.find(r=>r.p.length>1).p.length)/2)]||[0,0];
+car.position.set(start[0],0,start[1]);let yaw=0,v=0,keys={},touch={f:false,b:false,l:false,r:false};
+window.addEventListener('keydown',e=>keys[e.key.toLowerCase()]=true);window.addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
+function bind(id,k){let el=document.getElementById(id);el.onpointerdown=e=>{e.preventDefault();touch[k]=true};['pointerup','pointercancel','pointerleave'].forEach(ev=>el.addEventListener(ev,()=>touch[k]=false));}
+bind('f','f');bind('b','b');bind('l','l');bind('r','r');
+const target=new THREE.Vector3();let last=performance.now();
+function animate(now){requestAnimationFrame(animate);let dt=Math.min((now-last)/1000,.04);last=now;
+let f=keys.w||keys.arrowup||touch.f,b=keys.s||keys.arrowdown||touch.b,L=keys.a||keys.arrowleft||touch.l,R=keys.d||keys.arrowright||touch.r;
+if(f)v=Math.min(18,v+7*dt);else if(b)v=Math.max(-5,v-9*dt);else v*=Math.pow(.985,dt*60);
+let steering=(R?1:0)-(L?1:0);yaw+=steering*v*.055*dt;car.rotation.y=yaw;
+let nx=car.position.x+Math.sin(yaw)*v*dt,nz=car.position.z+Math.cos(yaw)*v*dt;
+if(Math.abs(v)<.2||onroad(nx,nz)){car.position.x=nx;car.position.z=nz;msg.textContent='자유 주행 중';}else{v=0;msg.textContent='도로 밖 이동 제한';}
+camera.position.lerp(new THREE.Vector3(car.position.x-Math.sin(yaw)*9,car.position.y+4,car.position.z-Math.cos(yaw)*9),.1);
+target.set(car.position.x,1,car.position.z);camera.lookAt(target);document.getElementById('spd').textContent=Math.round(Math.abs(v)*3.6);renderer.render(scene,camera);}
+camera.position.set(start[0],5,start[1]-10);requestAnimationFrame(animate);
+window.addEventListener('resize',()=>{camera.aspect=game.clientWidth/game.clientHeight;camera.updateProjectionMatrix();renderer.setSize(game.clientWidth,game.clientHeight);});
+</script></body></html>'''
+    html=html.replace("__DATA__",json.dumps(data,ensure_ascii=False))
+    components.html(html,height=720,scrolling=False)
+else:
+    st.info("왼쪽에 도시/주소를 입력하고 ‘도시 불러오기’를 누르세요. 예: 서울 강남구 테헤란로, 부산 해운대구, 인천국제공항")

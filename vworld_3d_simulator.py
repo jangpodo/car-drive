@@ -3,8 +3,8 @@ import streamlit.components.v1 as components
 import requests, math, json
 
 st.set_page_config(page_title="실제 도시 3D 운전 시뮬레이터", layout="wide")
-st.title("🚗 실제 도시 기반 3D 운전 시뮬레이터 (광폭 도로 & 레이어 정렬)")
-st.caption("도로와 건물의 크기를 키우고, 도로 겹침 현상 해결 및 A/D 조향 방향을 반대로 반전한 버전입니다.")
+st.title("🚗 실제 도시 기반 3D 운전 시뮬레이터 (광폭 도로 & 펜스 적용)")
+st.caption("도로 폭을 2배로 넓히고, 도로 위 건물 겹침 현상을 원천 차단하며, 도로 경계에 안전 펜스를 설치한 완성본입니다.")
 
 place = st.sidebar.text_input("도시/주소 입력", "서울특별시 강남구")
 radius = st.sidebar.select_slider("지도 범위 반경 (미터)", options=[500, 1000, 1500, 2000], value=1000)
@@ -14,7 +14,7 @@ load = st.sidebar.button("도시 불러오기", type="primary")
 def geocode(q):
     r = requests.get("https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/4.0"}, timeout=25)
+        headers={"User-Agent": "Student3DDrivingSimulator/5.0"}, timeout=25)
     r.raise_for_status()
     a = r.json()
     if not a: raise ValueError("장소를 찾지 못했습니다. 더 구체적인 주소를 입력하세요.")
@@ -34,59 +34,98 @@ def get_osm(lat, lon, r):
     err = None
     for url in ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"]:
         try:
-            x = requests.post(url, data=q, headers={"User-Agent": "Student3DDrivingSimulator/4.0"}, timeout=110)
+            x = requests.post(url, data=q, headers={"User-Agent": "Student3DDrivingSimulator/5.0"}, timeout=110)
             x.raise_for_status()
             return x.json()
         except Exception as ex: err = ex
     raise RuntimeError(f"OSM 요청 실패: {err}")
 
 def convert(data, lat, lon):
-    out = {"roads": [], "buildings": [], "water": []}
+    out = {"roads": [], "buildings": [], "water": [], "fences": []}
     fx = 111320 * math.cos(math.radians(lat))
     fz = 111320
     
+    road_segments = []
+    
+    # 1단계: 도로 및 펜스 데이터 생성 (도로 폭 2배 확충)
     for el in data.get("elements", []):
         tags = el.get("tags", {})
         g = el.get("geometry", [])
         if len(g) < 2: continue
-        
         pts = [[(p["lon"] - lon) * fx, -(p["lat"] - lat) * fz] for p in g]
         
         if "highway" in tags:
             hw = tags.get("highway", "")
             try: lanes = int(str(tags.get("lanes", "2")).split(";")[0])
             except: lanes = 2
-            # 도로 폭을 더 큼직하게 확장
             try: 
-                width = float(str(tags.get("width", "")).replace("m", "").strip())
+                width = float(str(tags.get("width", "")).replace("m", "").strip()) * 2.0
             except: 
-                width = max(6.0, lanes * 4.0)
+                width = max(12.0, lanes * 6.0) # 기존 대비 2배 넓은 광폭 도로
                 
+            road_segments.append({"p": pts, "w": width})
             out["roads"].append({
                 "p": pts, 
                 "w": width, 
                 "bridge": tags.get("bridge") == "yes", 
                 "name": tags.get("name", hw)
             })
-        elif "building" in tags and len(pts) >= 3:
-            # 건물 크기와 높이를 더 큼직하게 설정
-            try: 
-                h = float(str(tags.get("height", "")).replace("m", "").strip())
+            
+            # 도로 양쪽 가장자리에 설치될 펜스 라인 계산
+            for i in range(len(pts) - 1):
+                a = pts[i]; b = pts[i+1]
+                dx = b[0] - a[0]; dz = b[1] - a[1]
+                length = math.hypot(dx, dz)
+                if length < 0.5: continue
+                nx = -dz / length; nz = dx / length
+                hw = width / 2.0
+                out["fences"].append([[a[0] + nx*hw, a[1] + nz*hw], [b[0] + nx*hw, b[1] + nz*hw]])
+                out["fences"].append([[a[0] - nx*hw, a[1] - nz*hw], [b[0] - nx*hw, b[1] - nz*hw]])
+
+    # 도로와 겹치는 건물 필터링 함수
+    def is_near_road(x, z):
+        for r in road_segments:
+            w2 = r["w"] / 2.0 + 2.0 # 여유 간격 확보
+            rp = r["p"]
+            for i in range(len(rp) - 1):
+                a = rp[i]; b = rp[i+1]
+                vx = b[0] - a[0]; vz = b[1] - a[1]
+                l2 = vx*vx + vz*vz
+                t = 0 if l2 == 0 else max(0, min(1, ((x - a[0]) * vx + (z - a[1]) * vz) / l2))
+                cx = a[0] + t * vx; cz = a[1] + t * vz
+                if math.hypot(x - cx, z - cz) < w2:
+                    return True
+        return False
+
+    # 2단계: 도로와 겹치지 않는 건물만 안전하게 수집
+    for el in data.get("elements", []):
+        tags = el.get("tags", {})
+        g = el.get("geometry", [])
+        if len(g) < 2: continue
+        pts = [[(p["lon"] - lon) * fx, -(p["lat"] - lat) * fz] for p in g]
+        
+        if "building" in tags and len(pts) >= 3:
+            overlap = False
+            for p in pts:
+                if is_near_road(p[0], p[1]):
+                    overlap = True
+                    break
+            if overlap: continue # 도로 위나 인접한 겹침 건물은 제외
+            
+            try: h = float(str(tags.get("height", "")).replace("m", "").strip())
             except: 
-                try:
-                    levels = float(str(tags.get("building:levels", "4")).split(";")[0])
-                    h = levels * 3.5
-                except:
-                    h = 14.0
+                try: levels = float(str(tags.get("building:levels", "4")).split(";")[0]); h = levels * 3.5
+                except: h = 14.0
             out["buildings"].append({"p": pts, "h": max(5.0, h)})
         elif "waterway" in tags or "natural" in tags:
             out["water"].append({"p": pts})
+            
     return out
 
 if "citydata" not in st.session_state: st.session_state.citydata = None
 if load:
     try:
-        with st.spinner("실제 도시 및 건물 데이터를 불러오는 중..."):
+        with st.spinner("광폭 도로 및 펜스 데이터를 정밀 분석하는 중..."):
             lat, lon, name = geocode(place)
             raw = get_osm(lat, lon, radius)
             st.session_state.citydata = convert(raw, lat, lon)
@@ -96,8 +135,8 @@ if load:
 if st.session_state.citydata:
     data = st.session_state.citydata
     st.success(f"📍 {st.session_state.cityname}")
-    st.write(f"도로 {len(data['roads'])}개 · 건물 {len(data['buildings'])}개 · 물길 {len(data['water'])}개 (1:1 현실 크기)")
-    st.caption("조작 방법: W/S 가속·후진, A/D 조향(방향 반전됨) | 🖱️ 마우스 드래그: 시점 회전 | 휠: 확대/축소")
+    st.write(f"광폭 도로 {len(data['roads'])}개 · 건물 {len(data['buildings'])}개 · 안전 펜스 {len(data['fences'])}개")
+    st.caption("조작 방법: W/S 가속·후진, A/D 조향(반전됨) | 🖱️ 마우스 드래그: 시점 회전 | 휠: 확대/축소")
     
     html = r'''<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>body{margin:0;overflow:hidden;font-family:Arial}#game{height:750px;position:relative}
@@ -108,7 +147,7 @@ button{font-size:18px;padding:12px;background:#18212ddd;color:white;border:0;bor
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script></head><body>
 <div id="game">
-<div id="hud">속도 <span id="spd">0</span> km/h<br><span id="msg">광폭 도로 & 레이어 분리 주행 모드</span></div>
+<div id="hud">속도 <span id="spd">0</span> km/h<br><span id="msg">광폭 도로 & 안전 펜스 주행 모드</span></div>
 <div id="help">W/S: 가속·후진 | A/D: 조향 (반전됨)<br>🖱️ 마우스 드래그로 시점 회전</div>
 <div id="buttons"><button id="l">◀</button><button id="f">▲</button><button id="b">▼</button><button id="r">▶</button></div></div>
 <script>
@@ -130,7 +169,7 @@ sun.position.set(500, 1000, 500);
 scene.add(sun);
 
 const material = c => new THREE.MeshLambertMaterial({color: c});
-const gray = material(0x8a95a5), roadmat = material(0x2a2a2a), watermat = material(0x5a829e);
+const gray = material(0x8a95a5), roadmat = material(0x2a2a2a), watermat = material(0x5a829e), pencol = material(0xffd700);
 
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(10000, 10000), material(0x8c9c8c)); 
 ground.rotation.x = -Math.PI / 2; 
@@ -147,7 +186,7 @@ function building(p, h) {
     g.rotateX(-Math.PI / 2); 
     let mesh = new THREE.Mesh(g, gray);
     mesh.position.y = 0;
-    mesh.renderOrder = 1; // 건물은 아래 레이어
+    mesh.renderOrder = 1;
     scene.add(mesh);
 }
 
@@ -159,26 +198,42 @@ function road(points, width, mat, y = 0.5) {
         m.rotation.x = -Math.PI / 2; 
         m.rotation.z = Math.atan2(dx, dz);
         m.position.set((a[0] + b[0]) / 2, y, (a[1] + b[1]) / 2); 
-        m.renderOrder = 2; // 도로는 항상 건물 위에 그려지도록 상위 레이어 설정
+        m.renderOrder = 2;
         scene.add(m);
     }
 }
 
-// 1. 먼저 건물들을 생성
+function fence(p) {
+    for(let i = 0; i < p.length; i++) {
+        let a = p[i][0], b = p[i][1];
+        let dx = b[0] - a[0], dz = b[1] - a[1], len = Math.hypot(dx, dz);
+        if(len < 0.5) continue;
+        let m = new THREE.Mesh(new THREE.BoxGeometry(0.4, 1.2, len), pencol);
+        m.rotation.y = Math.atan2(dx, dz);
+        m.position.set((a[0] + b[0]) / 2, 0.6, (a[1] + b[1]) / 2);
+        m.renderOrder = 3;
+        scene.add(m);
+    }
+}
+
+// 1. 건물 생성
 for(const b of D.buildings) {
     if(b.p.length >= 3) building(b.p, b.h);
 }
 
-// 2. 그 위에 도면 높이와 renderOrder를 높여 도로나 물길이 절대 건물 밑에 묻히거나 겹치지 않도록 배치
+// 2. 광폭 도로 생성
 for(const r of D.roads) {
     road(r.p, r.w, roadmat, r.bridge ? 2.0 : 0.6);
 }
 
 for(const w of D.water) {
-    road(w.p, 20, watermat, 0.3);
+    road(w.p, 25, watermat, 0.3);
 }
 
-// 자동차 모델 (실제 크기)
+// 3. 도로 가장자리 안전 펜스 생성
+fence(D.fences);
+
+// 자동차 모델
 const car = new THREE.Group(); 
 scene.add(car);
 const body = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.8, 4.5), material(0xb83b3b)); 
@@ -240,7 +295,7 @@ function animate(now) {
     else if(b) v = Math.max(-10, v - 15 * dt);
     else v *= Math.pow(0.98, dt * 60);
     
-    // [요청 반영] A와 D의 방향 전환을 반대로 반전 (L과 R의 역할 교체)
+    // A/D 조향 방향 반전 적용
     let steering = (L ? 1 : 0) - (R ? 1 : 0);
     yaw += steering * v * 0.03 * dt;
     car.rotation.y = yaw;
@@ -250,7 +305,7 @@ function animate(now) {
     
     car.position.x = nx;
     car.position.z = nz;
-    msg.textContent = '광폭 도로 및 방향 반전 주행 중';
+    msg.textContent = '광폭 도로 & 안전 펜스 주행 중';
     
     if(!isDragging) {
         camAngleY = yaw + Math.PI;

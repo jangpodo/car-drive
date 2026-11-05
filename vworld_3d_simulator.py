@@ -3,8 +3,8 @@ import streamlit.components.v1 as components
 import requests, math, json
 
 st.set_page_config(page_title="실제 도시 3D 운전 시뮬레이터", layout="wide")
-st.title("🚗 실제 도시 기반 3D 운전 시뮬레이터 (광폭 도로 & 펜스 적용)")
-st.caption("도로 폭을 2배로 넓히고, 도로 위 건물 겹침 현상을 원천 차단하며, 도로 경계에 안전 펜스를 설치한 완성본입니다.")
+st.title("🚗 실제 도시 기반 3D 운전 시뮬레이터 (도로 침범 차단 & 펜스 충돌)")
+st.caption("도로 위 겹치는 건물을 완벽히 제거하고, 도로 바깥쪽에 차량 통과를 막는 안전 펜스를 적용한 완성본입니다.")
 
 place = st.sidebar.text_input("도시/주소 입력", "서울특별시 강남구")
 radius = st.sidebar.select_slider("지도 범위 반경 (미터)", options=[500, 1000, 1500, 2000], value=1000)
@@ -14,7 +14,7 @@ load = st.sidebar.button("도시 불러오기", type="primary")
 def geocode(q):
     r = requests.get("https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/5.0"}, timeout=25)
+        headers={"User-Agent": "Student3DDrivingSimulator/6.0"}, timeout=25)
     r.raise_for_status()
     a = r.json()
     if not a: raise ValueError("장소를 찾지 못했습니다. 더 구체적인 주소를 입력하세요.")
@@ -34,7 +34,7 @@ def get_osm(lat, lon, r):
     err = None
     for url in ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"]:
         try:
-            x = requests.post(url, data=q, headers={"User-Agent": "Student3DDrivingSimulator/5.0"}, timeout=110)
+            x = requests.post(url, data=q, headers={"User-Agent": "Student3DDrivingSimulator/6.0"}, timeout=110)
             x.raise_for_status()
             return x.json()
         except Exception as ex: err = ex
@@ -47,7 +47,7 @@ def convert(data, lat, lon):
     
     road_segments = []
     
-    # 1단계: 도로 및 펜스 데이터 생성 (도로 폭 2배 확충)
+    # 1단계: 도로 및 펜스 생성 (도로 폭 2배 이상 큼직하게 확장)
     for el in data.get("elements", []):
         tags = el.get("tags", {})
         g = el.get("geometry", [])
@@ -61,7 +61,7 @@ def convert(data, lat, lon):
             try: 
                 width = float(str(tags.get("width", "")).replace("m", "").strip()) * 2.0
             except: 
-                width = max(12.0, lanes * 6.0) # 기존 대비 2배 넓은 광폭 도로
+                width = max(16.0, lanes * 8.0) # 훨씬 넓어진 광폭 도로
                 
             road_segments.append({"p": pts, "w": width})
             out["roads"].append({
@@ -71,33 +71,45 @@ def convert(data, lat, lon):
                 "name": tags.get("name", hw)
             })
             
-            # 도로 양쪽 가장자리에 설치될 펜스 라인 계산
+            # 도로 가장자리보다 '아주 약간 바깥쪽'에 펜스 설치 (w/2 + 0.8m)
             for i in range(len(pts) - 1):
                 a = pts[i]; b = pts[i+1]
                 dx = b[0] - a[0]; dz = b[1] - a[1]
                 length = math.hypot(dx, dz)
                 if length < 0.5: continue
                 nx = -dz / length; nz = dx / length
-                hw = width / 2.0
-                out["fences"].append([[a[0] + nx*hw, a[1] + nz*hw], [b[0] + nx*hw, b[1] + nz*hw]])
-                out["fences"].append([[a[0] - nx*hw, a[1] - nz*hw], [b[0] - nx*hw, b[1] - nz*hw]])
+                fence_offset = (width / 2.0) + 0.8 
+                out["fences"].append([[a[0] + nx*fence_offset, a[1] + nz*fence_offset], [b[0] + nx*fence_offset, b[1] + nz*fence_offset]])
+                out["fences"].append([[a[0] - nx*fence_offset, a[1] - nz*fence_offset], [b[0] - nx*fence_offset, b[1] - nz*fence_offset]])
 
-    # 도로와 겹치는 건물 필터링 함수
-    def is_near_road(x, z):
+    # 엄격한 건물-도로 겹침 검사 함수 (도로 위나 침범하는 건물은 100% 필터링)
+    def check_overlap(pts):
         for r in road_segments:
-            w2 = r["w"] / 2.0 + 2.0 # 여유 간격 확보
+            r_hw = r["w"] / 2.0 + 3.5 # 여유 버퍼
             rp = r["p"]
             for i in range(len(rp) - 1):
-                a = rp[i]; b = rp[i+1]
-                vx = b[0] - a[0]; vz = b[1] - a[1]
-                l2 = vx*vx + vz*vz
-                t = 0 if l2 == 0 else max(0, min(1, ((x - a[0]) * vx + (z - a[1]) * vz) / l2))
-                cx = a[0] + t * vx; cz = a[1] + t * vz
-                if math.hypot(x - cx, z - cz) < w2:
-                    return True
+                ra = rp[i]; rb = rp[i+1]
+                rvx = rb[0] - ra[0]; rvz = rb[1] - ra[1]
+                rl2 = rvx*rvx + rvz*rvz
+                
+                for j in range(len(pts)):
+                    p = pts[j]
+                    t = 0 if rl2 == 0 else max(0, min(1, ((p[0] - ra[0])*rvx + (p[1] - ra[1])*rvz) / rl2))
+                    cx = ra[0] + t * rvx; cz = ra[1] + t * rvz
+                    if math.hypot(p[0] - cx, p[1] - cz) < r_hw:
+                        return True
+                    
+                    # 변 중간점도 검사
+                    next_p = pts[(j + 1) % len(pts)]
+                    mid_x = (p[0] + next_p[0]) / 2
+                    mid_z = (p[1] + next_p[1]) / 2
+                    t_mid = 0 if rl2 == 0 else max(0, min(1, ((mid_x - ra[0])*rvx + (mid_z - ra[1])*rvz) / rl2))
+                    mcx = ra[0] + t_mid * rvx; mcz = ra[1] + t_mid * rvz
+                    if math.hypot(mid_x - mcx, mid_z - mcz) < r_hw:
+                        return True
         return False
 
-    # 2단계: 도로와 겹치지 않는 건물만 안전하게 수집
+    # 2단계: 도로와 겹치는 모든 건물을 완전히 제거하고 남은 건물만 수집
     for el in data.get("elements", []):
         tags = el.get("tags", {})
         g = el.get("geometry", [])
@@ -105,12 +117,8 @@ def convert(data, lat, lon):
         pts = [[(p["lon"] - lon) * fx, -(p["lat"] - lat) * fz] for p in g]
         
         if "building" in tags and len(pts) >= 3:
-            overlap = False
-            for p in pts:
-                if is_near_road(p[0], p[1]):
-                    overlap = True
-                    break
-            if overlap: continue # 도로 위나 인접한 겹침 건물은 제외
+            if check_overlap(pts):
+                continue # 도로 위나 겹치는 건물은 완전히 삭제!
             
             try: h = float(str(tags.get("height", "")).replace("m", "").strip())
             except: 
@@ -125,7 +133,7 @@ def convert(data, lat, lon):
 if "citydata" not in st.session_state: st.session_state.citydata = None
 if load:
     try:
-        with st.spinner("광폭 도로 및 펜스 데이터를 정밀 분석하는 중..."):
+        with st.spinner("도로 침범 건물을 정밀 제거하고 안전 펜스를 설치하는 중..."):
             lat, lon, name = geocode(place)
             raw = get_osm(lat, lon, radius)
             st.session_state.citydata = convert(raw, lat, lon)
@@ -135,7 +143,7 @@ if load:
 if st.session_state.citydata:
     data = st.session_state.citydata
     st.success(f"📍 {st.session_state.cityname}")
-    st.write(f"광폭 도로 {len(data['roads'])}개 · 건물 {len(data['buildings'])}개 · 안전 펜스 {len(data['fences'])}개")
+    st.write(f"광폭 도로 {len(data['roads'])}개 · 도로 위 겹침 제거된 건물 {len(data['buildings'])}개 · 안전 펜스 {len(data['fences'])}개")
     st.caption("조작 방법: W/S 가속·후진, A/D 조향(반전됨) | 🖱️ 마우스 드래그: 시점 회전 | 휠: 확대/축소")
     
     html = r'''<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -147,7 +155,7 @@ button{font-size:18px;padding:12px;background:#18212ddd;color:white;border:0;bor
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script></head><body>
 <div id="game">
-<div id="hud">속도 <span id="spd">0</span> km/h<br><span id="msg">광폭 도로 & 안전 펜스 주행 모드</span></div>
+<div id="hud">속도 <span id="spd">0</span> km/h<br><span id="msg">안전 펜스 충돌 및 자유 주행 모드</span></div>
 <div id="help">W/S: 가속·후진 | A/D: 조향 (반전됨)<br>🖱️ 마우스 드래그로 시점 회전</div>
 <div id="buttons"><button id="l">◀</button><button id="f">▲</button><button id="b">▼</button><button id="r">▶</button></div></div>
 <script>
@@ -216,7 +224,7 @@ function fence(p) {
     }
 }
 
-// 1. 건물 생성
+// 1. 겹침이 제거된 건물 생성
 for(const b of D.buildings) {
     if(b.p.length >= 3) building(b.p, b.h);
 }
@@ -230,7 +238,7 @@ for(const w of D.water) {
     road(w.p, 25, watermat, 0.3);
 }
 
-// 3. 도로 가장자리 안전 펜스 생성
+// 3. 도로 가장자리 바깥쪽 안전 펜스 생성
 fence(D.fences);
 
 // 자동차 모델
@@ -261,6 +269,22 @@ function bind(id, k) {
     ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => el.addEventListener(ev, () => touch[k] = false));
 }
 bind('f', 'f'); bind('b', 'b'); bind('l', 'l'); bind('r', 'r');
+
+// 펜스 충돌 감지 함수 (차가 펜스를 통과하지 못하게 막음)
+const FENCES = D.fences;
+function checkFenceCollision(x, z, radius) {
+    for(let f of FENCES) {
+        let a = f[0], b = f[1];
+        let vx = b[0] - a[0], vz = b[1] - a[1];
+        let l2 = vx*vx + vz*vz;
+        let t = l2 ? Math.max(0, Math.min(1, ((x - a[0]) * vx + (z - a[1]) * vz) / l2)) : 0;
+        let cx = a[0] + t * vx, cz = a[1] + t * vz;
+        if(Math.hypot(x - cx, z - cz) < radius) {
+            return true;
+        }
+    }
+    return false;
+}
 
 let camAngleX = 0.6, camAngleY = 0, camDist = 35;
 let isDragging = false, prevMousePos = {x: 0, y: 0};
@@ -303,9 +327,15 @@ function animate(now) {
     let nx = car.position.x + Math.sin(yaw) * v * dt;
     let nz = car.position.z + Math.cos(yaw) * v * dt;
     
-    car.position.x = nx;
-    car.position.z = nz;
-    msg.textContent = '광폭 도로 & 안전 펜스 주행 중';
+    // 펜스 충돌 시 차가 통과하지 못하도록 차단
+    if(!checkFenceCollision(nx, nz, 1.3)) {
+        car.position.x = nx;
+        car.position.z = nz;
+        msg.textContent = '광폭 도로 & 안전 펜스 주행 중';
+    } else {
+        v = 0; // 펜스에 부딪히면 정지
+        msg.textContent = '⚠️ 펜스에 부딪혀 더 나갈 수 없습니다!';
+    }
     
     if(!isDragging) {
         camAngleY = yaw + Math.PI;

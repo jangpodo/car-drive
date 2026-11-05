@@ -3,8 +3,8 @@ import streamlit.components.v1 as components
 import requests, math, json
 
 st.set_page_config(page_title="실제 도시 3D 운전 시뮬레이터", layout="wide")
-st.title("🚗 실제 도시 기반 3D 운전 시뮬레이터 (도로 침범 객체 완전 말소)")
-st.caption("도로 위를 조금이라도 침범하는 건물과 펜스는 완벽하게 삭제하여 오직 도로와 자동차만 남긴 버전입니다.")
+st.title("🚗 실제 도시 기반 3D 운전 시뮬레이터 (도로 위 건물 완전 차단)")
+st.caption("도로를 침범하는 건물과 거추장스러운 펜스를 완전히 제거하여 오직 도로와 자동차만 남긴 클린 버전입니다.")
 
 place = st.sidebar.text_input("도시/주소 입력", "서울특별시 강남구")
 radius = st.sidebar.select_slider("지도 범위 반경 (미터)", options=[500, 1000, 1500, 2000], value=1000)
@@ -14,7 +14,7 @@ load = st.sidebar.button("도시 불러오기", type="primary")
 def geocode(q):
     r = requests.get("https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/7.0"}, timeout=25)
+        headers={"User-Agent": "Student3DDrivingSimulator/8.0"}, timeout=25)
     r.raise_for_status()
     a = r.json()
     if not a: raise ValueError("장소를 찾지 못했습니다. 더 구체적인 주소를 입력하세요.")
@@ -34,14 +34,14 @@ def get_osm(lat, lon, r):
     err = None
     for url in ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"]:
         try:
-            x = requests.post(url, data=q, headers={"User-Agent": "Student3DDrivingSimulator/7.0"}, timeout=110)
+            x = requests.post(url, data=q, headers={"User-Agent": "Student3DDrivingSimulator/8.0"}, timeout=110)
             x.raise_for_status()
             return x.json()
         except Exception as ex: err = ex
     raise RuntimeError(f"OSM 요청 실패: {err}")
 
 def convert(data, lat, lon):
-    out = {"roads": [], "buildings": [], "water": [], "fences": []}
+    out = {"roads": [], "buildings": [], "water": []}
     fx = 111320 * math.cos(math.radians(lat))
     fz = 111320
     
@@ -58,7 +58,7 @@ def convert(data, lat, lon):
             hw = tags.get("highway", "")
             try: lanes = int(str(tags.get("lanes", "2")).split(";")[0])
             except: lanes = 2
-            width = max(16.0, lanes * 8.0)  # 넉넉한 광폭 도로
+            width = max(18.0, lanes * 9.0)  # 훨씬 넓어진 쾌적한 광폭 도로
                 
             road_segments.append({"p": pts, "w": width})
             out["roads"].append({
@@ -68,49 +68,25 @@ def convert(data, lat, lon):
                 "name": tags.get("name", hw)
             })
 
-    # 특정 좌표 (x, z)가 도로 영역 내부에 있거나 도로와 가까운지 검사하는 강력한 함수
-    def is_on_road(x, z, buffer=4.0):
-        for r in road_segments:
-            r_hw = (r["w"] / 2.0) + buffer
-            rp = r["p"]
-            for i in range(len(rp) - 1):
-                ra = rp[i]; rb = rp[i+1]
-                rvx = rb[0] - ra[0]; rvz = rb[1] - ra[1]
-                rl2 = rvx*rvx + rvz*rvz
-                t = 0 if rl2 == 0 else max(0, min(1, ((x - ra[0])*rvx + (z - ra[1])*rvz) / rl2))
-                cx = ra[0] + t * rvx; cz = ra[1] + t * rvz
-                if math.hypot(x - cx, z - cz) < r_hw:
-                    return True
+    # 2단계: 건물의 어떤 꼭짓점이라도 도로 근처에 있으면 무조건 삭제하는 강력한 필터
+    def is_too_close_to_road(pts, road_segs):
+        for p in pts:
+            px, pz = p[0], p[1]
+            for r in road_segs:
+                # 도로 폭 + 넉넉한 여유 버퍼(10m) 내에 들어오는 건물은 전부 차단
+                r_hw = (r["w"] / 2.0) + 10.0 
+                rp = r["p"]
+                for i in range(len(rp) - 1):
+                    ra = rp[i]; rb = rp[i+1]
+                    rvx = rb[0] - ra[0]; rvz = rb[1] - ra[1]
+                    rl2 = rvx*rvx + rvz*rvz
+                    t = 0 if rl2 == 0 else max(0, min(1, ((px - ra[0])*rvx + (pz - ra[1])*rvz) / rl2))
+                    cx = ra[0] + t * rvx; cz = ra[1] + t * rvz
+                    if math.hypot(px - cx, pz - cz) < r_hw:
+                        return True
         return False
 
-    # 2단계: 도로 위를 침범하는 펜스 조각은 절대 생성하지 않고 완벽히 필터링
-    for r in road_segments:
-        rp = r["p"]
-        r_hw = r["w"] / 2.0 + 1.2  # 도로 가장자리 바로 바깥쪽
-        for i in range(len(rp) - 1):
-            a = rp[i]; b = rp[i+1]
-            dx = b[0] - a[0]; dz = b[1] - a[1]
-            length = math.hypot(dx, dz)
-            if length < 0.5: continue
-            nx = -dz / length; nz = dx / length
-            
-            # 왼쪽 바깥쪽 펜스 후보
-            f1_start = [a[0] + nx*r_hw, a[1] + nz*r_hw]
-            f1_end = [b[0] + nx*r_hw, b[1] + nz*r_hw]
-            # 오른쪽 바깥쪽 펜스 후보
-            f2_start = [a[0] - nx*r_hw, a[1] - nz*r_hw]
-            f2_end = [b[0] - nx*r_hw, b[1] - nz*r_hw]
-            
-            # 펜스 중심점이 도로 위에 침범하지 않는 경우에만 추가!
-            mid1_x = (f1_start[0] + f1_end[0])/2; mid1_z = (f1_start[1] + f1_end[1])/2
-            mid2_x = (f2_start[0] + f2_end[0])/2; mid2_z = (f2_start[1] + f2_end[1])/2
-            
-            if not is_on_road(mid1_x, mid1_z, buffer=r["w"]/2.0):
-                out["fences"].append([f1_start, f1_end])
-            if not is_on_road(mid2_x, mid2_z, buffer=r["w"]/2.0):
-                out["fences"].append([f2_start, f2_end])
-
-    # 3단계: 도로와 조금이라도 겹치거나 침범하는 건물은 100% 무조건 삭제
+    # 3단계: 도로 위나 주변을 침범하는 건물은 100% 완전 삭제
     for el in data.get("elements", []):
         tags = el.get("tags", {})
         g = el.get("geometry", [])
@@ -118,22 +94,8 @@ def convert(data, lat, lon):
         pts = [[(p["lon"] - lon) * fx, -(p["lat"] - lat) * fz] for p in g]
         
         if "building" in tags and len(pts) >= 3:
-            # 건물의 모든 꼭짓점 및 중심점, 변의 중점이 도로 위나 인접한지 검사
-            intersect = False
-            for p in pts:
-                if is_on_road(p[0], p[1], buffer=3.0):
-                    intersect = True
-                    break
-            
-            # 중심점 검사
-            if not intersect:
-                cx = sum(p[0] for p in pts) / len(pts)
-                cz = sum(p[1] for p in pts) / len(pts)
-                if is_on_road(cx, cz, buffer=3.0):
-                    intersect = True
-
-            if intersect:
-                continue # 도로 위를 침범하는 건물은 완전히 말소!
+            if is_too_close_to_road(pts, road_segments):
+                continue # 도로 위나 침범하는 건물은 완전히 말소!
             
             try: h = float(str(tags.get("height", "")).replace("m", "").strip())
             except: 
@@ -148,7 +110,7 @@ def convert(data, lat, lon):
 if "citydata" not in st.session_state: st.session_state.citydata = None
 if load:
     try:
-        with st.spinner("도로 위 침범 객체를 완전히 지우고 깔끔하게 정리하는 중..."):
+        with st.spinner("도로 위 침범 건물을 완벽히 제거하고 지도를 정돈하는 중..."):
             lat, lon, name = geocode(place)
             raw = get_osm(lat, lon, radius)
             st.session_state.citydata = convert(raw, lat, lon)
@@ -158,7 +120,7 @@ if load:
 if st.session_state.citydata:
     data = st.session_state.citydata
     st.success(f"📍 {st.session_state.cityname}")
-    st.write(f"광폭 도로 {len(data['roads'])}개 · 침범 차단된 건물 {len(data['buildings'])}개 · 정제된 안전 펜스 {len(data['fences'])}개")
+    st.write(f"광폭 도로 {len(data['roads'])}개 · 클린 건물 {len(data['buildings'])}개 (펜스 없음)")
     st.caption("조작 방법: W/S 가속·후진, A/D 조향(반전됨) | 🖱️ 마우스 드래그: 시점 회전 | 휠: 확대/축소")
     
     html = r'''<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -192,7 +154,7 @@ sun.position.set(500, 1000, 500);
 scene.add(sun);
 
 const material = c => new THREE.MeshLambertMaterial({color: c});
-const gray = material(0x8a95a5), roadmat = material(0x2a2a2a), watermat = material(0x5a829e), pencol = material(0xffd700);
+const gray = material(0x8a95a5), roadmat = material(0x2a2a2a), watermat = material(0x5a829e);
 
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(10000, 10000), material(0x8c9c8c)); 
 ground.rotation.x = -Math.PI / 2; 
@@ -226,20 +188,7 @@ function road(points, width, mat, y = 0.5) {
     }
 }
 
-function fence(p) {
-    for(let i = 0; i < p.length; i++) {
-        let a = p[i][0], b = p[i][1];
-        let dx = b[0] - a[0], dz = b[1] - a[1], len = Math.hypot(dx, dz);
-        if(len < 0.5) continue;
-        let m = new THREE.Mesh(new THREE.BoxGeometry(0.4, 1.2, len), pencol);
-        m.rotation.y = Math.atan2(dx, dz);
-        m.position.set((a[0] + b[0]) / 2, 0.6, (a[1] + b[1]) / 2);
-        m.renderOrder = 3;
-        scene.add(m);
-    }
-}
-
-// 1. 깨끗하게 정제된 건물 생성
+// 1. 도로 위 침범 건물이 완전히 제거된 건물 생성
 for(const b of D.buildings) {
     if(b.p.length >= 3) building(b.p, b.h);
 }
@@ -252,9 +201,6 @@ for(const r of D.roads) {
 for(const w of D.water) {
     road(w.p, 25, watermat, 0.3);
 }
-
-// 3. 도로 바깥쪽에만 깔끔하게 배치된 안전 펜스 생성
-fence(D.fences);
 
 // 자동차 모델
 const car = new THREE.Group(); 
@@ -284,22 +230,6 @@ function bind(id, k) {
     ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => el.addEventListener(ev, () => touch[k] = false));
 }
 bind('f', 'f'); bind('b', 'b'); bind('l', 'l'); bind('r', 'r');
-
-// 펜스 충돌 감지 (차가 펜스를 뚫고 나가지 못함)
-const FENCES = D.fences;
-function checkFenceCollision(x, z, radius) {
-    for(let f of FENCES) {
-        let a = f[0], b = f[1];
-        let vx = b[0] - a[0], vz = b[1] - a[1];
-        let l2 = vx*vx + vz*vz;
-        let t = l2 ? Math.max(0, Math.min(1, ((x - a[0]) * vx + (z - a[1]) * vz) / l2)) : 0;
-        let cx = a[0] + t * vx, cz = a[1] + t * vz;
-        if(Math.hypot(x - cx, z - cz) < radius) {
-            return true;
-        }
-    }
-    return false;
-}
 
 let camAngleX = 0.6, camAngleY = 0, camDist = 35;
 let isDragging = false, prevMousePos = {x: 0, y: 0};
@@ -341,14 +271,9 @@ function animate(now) {
     let nx = car.position.x + Math.sin(yaw) * v * dt;
     let nz = car.position.z + Math.cos(yaw) * v * dt;
     
-    if(!checkFenceCollision(nx, nz, 1.3)) {
-        car.position.x = nx;
-        car.position.z = nz;
-        msg.textContent = '클린 도로 주행 중';
-    } else {
-        v = 0;
-        msg.textContent = '⚠️ 펜스 충돌!';
-    }
+    car.position.x = nx;
+    car.position.z = nz;
+    msg.textContent = '클린 도로 주행 중';
     
     if(!isDragging) {
         camAngleY = yaw + Math.PI;

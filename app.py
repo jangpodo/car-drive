@@ -3,8 +3,8 @@ import streamlit.components.v1 as components
 import requests, math, json
 
 st.set_page_config(page_title="실제 도시 3D 입체 운전 시뮬레이터", layout="wide")
-st.title("🚗 실제 도시 기반 3D 입체 운전 시뮬레이터 (고도·지형 반영)")
-st.caption("OpenStreetMap 데이터와 지형 고도(DEM 시뮬레이션)를 결합하여 입체적인 오르막/내리막, 강, 숲을 표현합니다.")
+st.title("🚗 실제 도시 기반 3D 입체 운전 시뮬레이터 (광폭 도로 & 자유 시점)")
+st.caption("차량 크기 대비 넓은 도로 폭과 도로 이탈 방지, 마우스 자유 시점 기능이 적용된 시뮬레이터입니다.")
 
 # 사이드바 설정
 st.sidebar.header("🗺️ 지도 설정")
@@ -17,7 +17,7 @@ load = st.sidebar.button("도시 불러오기", type="primary")
 def geocode(q):
     r = requests.get("https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/2.0"}, timeout=25)
+        headers={"User-Agent": "Student3DDrivingSimulator/4.0"}, timeout=25)
     r.raise_for_status()
     a = r.json()
     if not a: raise ValueError("장소를 찾지 못했습니다. 더 구체적인 주소를 입력하세요.")
@@ -39,7 +39,7 @@ def get_osm(lat, lon, r):
     err = None
     for url in ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"]:
         try:
-            x = requests.post(url, data=q, headers={"User-Agent": "Student3DDrivingSimulator/2.0"}, timeout=110)
+            x = requests.post(url, data=q, headers={"User-Agent": "Student3DDrivingSimulator/4.0"}, timeout=110)
             x.raise_for_status()
             return x.json()
         except Exception as ex: err = ex
@@ -57,9 +57,7 @@ def convert(data, lat, lon, t_scale):
         
         pts = [[(p["lon"] - lon) * fx * .1, -(p["lat"] - lat) * fz * .1] for p in g]
         
-        # 지형 고도(오르막/내리막) 연출을 위한 가상 지형 높이 함수 (중심에서 멀어질수록 완만한 기복 생성)
         def get_alt(x, z):
-            # 노이즈 형태의 가상 고도 계산 (실제 Vworld DEM 연동 시 이 부분을 API 고도값으로 대체 가능)
             return (math.sin(x * 0.003) * math.cos(z * 0.003) * 35.0 + math.sin(x * 0.01) * 5.0) * t_scale
 
         if "highway" in tags:
@@ -67,15 +65,17 @@ def convert(data, lat, lon, t_scale):
             try: lanes = int(str(tags.get("lanes", "0")).split(";")[0])
             except: lanes = 0
             
-            if lanes >= 4 or (lanes == 0 and hw in ("motorway", "trunk", "motorway_link", "trunk_link")):
+            if lanes >= 2 or (lanes == 0 and hw in ("motorway", "trunk", "primary", "secondary", "tertiary", "motorway_link", "trunk_link", "primary_link")):
                 try: width = float(str(tags.get("width", "")).replace("m", "").strip()) * .1
-                except: width = max(1.4, lanes * 3.5 * .1 if lanes else 1.5)
+                except: width = max(3.6, lanes * 4.0 * .1 if lanes else 3.6)
                 
-                # 도로 경로상의 각 점에 고도 부여
+                # 차 폭(1.5m)의 2배 이상인 최소 3.6m 이상의 폭으로 보장
+                final_width = max(width, 3.6)
+                
                 road_pts = [[p[0], get_alt(p[0], p[1]), p[1]] for p in pts]
                 out["roads"].append({
                     "p": road_pts, 
-                    "w": max(width, 1.2), 
+                    "w": final_width, 
                     "bridge": tags.get("bridge") == "yes", 
                     "name": tags.get("name", hw)
                 })
@@ -112,18 +112,21 @@ if load:
 if st.session_state.citydata:
     data = st.session_state.citydata
     st.success(f"📍 {st.session_state.cityname}")
-    st.write(f"도로 {len(data['roads'])}개 · 건물 {len(data['buildings'])}개 · 물길 {len(data['water'])}개 · 숲 구역 {len(data['forests'])}개")
-    st.caption("조작 방법: W/S 가속·후진, A/D 자유 조향 (오르막길과 내리막길의 입체 지형을 주행해보세요!)")
+    st.write(f"도로 {len(data['roads'])}개 · 건물 {len(data['buildings'])}개 · 물길 {len(data['water'])}개")
+    st.caption("조작 방법: W/S 가속·후진, A/D 조향 | 우측 상단 버튼으로 [자동차 추적 시점]과 [마우스 자유 시점]을 전환할 수 있습니다.")
     
     html = r'''<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>body{margin:0;overflow:hidden;font-family:Arial}#game{height:700px;position:relative}
 #hud,#help{position:absolute;z-index:4;background:#18212ddd;color:white;padding:10px;border-radius:8px}
-#hud{top:10px;left:10px}#help{top:10px;right:10px;font-size:12px}
+#hud{top:10px;left:10px}#help{top:10px;right:10px;font-size:12px;text-align:right;}
 #buttons{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:5;display:flex;gap:6px}
-button{font-size:18px;padding:12px;background:#18212ddd;color:white;border:0;border-radius:8px;touch-action:none}</style>
+button{font-size:18px;padding:12px;background:#18212ddd;color:white;border:0;border-radius:8px;touch-action:none;cursor:pointer;}
+#camBtn{margin-top:5px;background:#2a4365;font-size:11px;padding:5px 8px;border-radius:4px;}
+</style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script></head><body>
-<div id="game"><div id="hud">속도 <span id="spd">0</span> km/h<br><span id="msg">입체 지형 도로 위에서 주행하세요.</span></div>
-<div id="help">W/S: 가속·후진<br>A/D: 자유 조향<br>지형 고저차 반영됨</div>
+<div id="game">
+<div id="hud">속도 <span id="spd">0</span> km/h<br><span id="msg">도로 위에서만 주행 가능합니다.</span></div>
+<div id="help">W/S: 가속·후진 | A/D: 조향<br><button id="camBtn">시점: 차량 추적 모드</button></div>
 <div id="buttons"><button id="l">◀</button><button id="f">▲</button><button id="b">▼</button><button id="r">▶</button></div></div>
 <script>
 const D = __DATA__;
@@ -146,13 +149,11 @@ scene.add(sun);
 const material = c => new THREE.MeshLambertMaterial({color: c});
 const gray = material(0x858585), roadmat = material(0x363636), watermat = material(0x5a829e), green = material(0x5a7a5a), trunkmat = material(0x554c43);
 
-// 입체 지형 메쉬 생성 (고저차가 있는 Plane)
 const terrainGeo = new THREE.PlaneGeometry(4000, 4000, 64, 64);
 terrainGeo.rotateX(-Math.PI / 2);
 const posAttr = terrainGeo.attributes.position;
 for(let i=0; i<posAttr.count; i++) {
     let px = posAttr.getX(i), pz = posAttr.getZ(i);
-    // 지형 높이 공식 동기화
     let py = (Math.sin(px * 0.003) * Math.cos(pz * 0.003) * 35.0 + Math.sin(px * 0.01) * 5.0);
     posAttr.setY(i, py);
 }
@@ -160,34 +161,23 @@ terrainGeo.computeVertexNormals();
 const ground = new THREE.Mesh(terrainGeo, material(0x7a8c7a));
 scene.add(ground);
 
-// 3D 입체 도로 렌더링 (점과 점 사이를 연결하는 기울어진 세그먼트)
 function road(points, width, mat) {
     for(let i = 0; i < points.length - 1; i++) {
         let a = points[i], b = points[i+1];
         let dx = b[0] - a[0], dz = b[2] - a[2], len = Math.hypot(dx, dz);
         if(len < .1) continue;
-        
         let geo = new THREE.PlaneGeometry(width, len);
         geo.rotateX(-Math.PI / 2);
         let m = new THREE.Mesh(geo, mat);
-        
-        // 위치 및 경사각(오르막/내리막) 적용
-        let mx = (a[0] + b[0]) / 2;
-        let mz = (a[2] + b[2]) / 2;
-        let my = (a[1] + b[1]) / 2 + 0.05;
+        let mx = (a[0] + b[0]) / 2, mz = (a[2] + b[2]) / 2, my = (a[1] + b[1]) / 2 + 0.05;
         m.position.set(mx, my, mz);
-        
-        // 회전 설정 (Yaw 및 Pitch 경사 반영)
         m.rotation.y = Math.atan2(dx, dz);
         let dy = b[1] - a[1];
-        let pitch = Math.atan2(dy, len);
-        m.rotation.x = -Math.PI / 2 + pitch;
-        
+        m.rotation.x = -Math.PI / 2 + Math.atan2(dy, len);
         scene.add(m);
     }
 }
 
-// 건물 렌더링 (고도 반영)
 function building(p, h, alt) {
     const s = new THREE.Shape();
     s.moveTo(p[0][0], p[0][1]);
@@ -200,37 +190,11 @@ function building(p, h, alt) {
     scene.add(mesh);
 }
 
-// 나무 및 숲 생성
-function tree(x, y, z) {
-    let t = new THREE.Mesh(new THREE.CylinderGeometry(.08, .12, .6, 5), trunkmat);
-    t.position.set(x, y + 0.3, z);
-    scene.add(t);
-    let c = new THREE.Mesh(new THREE.ConeGeometry(.45, 1.0, 5), green);
-    c.position.set(x, y + 1.0, z);
-    scene.add(c);
-}
-
-// 데이터 반영 실행
-for(const r of D.roads) {
-    road(r.p, r.w, roadmat);
-    // 도로 주변 가로수 및 숲 생성
-    for(let i = 0; i < r.p.length - 1; i++) {
-        let a = r.p[i], b = r.p[i+1];
-        let dx = b[0] - a[0], dz = b[2] - a[2], len = Math.hypot(dx, dz);
-        if(len < 12) continue;
-        let nx = -dz / len, nz = dx / len;
-        for(let t_step = 10; t_step < len; t_step += 25) {
-            let cx = a[0] + dx * t_step / len, cz = a[2] + dz * t_step / len;
-            let cy = (a[1] + b[1]) / 2;
-            tree(cx + nx * (r.w/2 + 1.5), cy, cz + nz * (r.w/2 + 1.5));
-        }
-    }
-}
-
+for(const r of D.roads) road(r.p, r.w, roadmat);
 for(const b of D.buildings) if(b.p.length >= 3) building(b.p, b.h, b.alt);
-for(const w of D.water) road(w.p, 5, watermat);
+for(const w of D.water) road(w.p, 8, watermat);
 
-// 차량 모델 생성
+// 차량 모델 (폭 1.5m 설정)
 const car = new THREE.Group();
 scene.add(car);
 const body = new THREE.Mesh(new THREE.BoxGeometry(1.5, .6, 3), material(0xb83b3b));
@@ -242,7 +206,6 @@ for(let x of [-.78, .78]) for(let z of [-.95, .95]) {
     wheel.position.set(x, .3, z); car.add(wheel);
 }
 
-// 초기 위치 설정 (첫 번째 도로 위)
 let start = D.roads.find(r => r.p.length > 1)?.p[Math.floor(D.roads.find(r => r.p.length > 1).p.length / 2)] || [0, 0, 0];
 car.position.set(start[0], start[1] + 0.5, start[2]);
 
@@ -257,13 +220,57 @@ function bind(id, k) {
 }
 bind('f', 'f'); bind('b', 'b'); bind('l', 'l'); bind('r', 'r');
 
-const target = new THREE.Vector3();
-let last = performance.now();
-
-// 지형 고도 함수와 동일한 계산을 자바스크립트 내에서도 수행
 function getTerrainHeight(x, z) {
     return (Math.sin(x * 0.003) * Math.cos(z * 0.003) * 35.0 + Math.sin(x * 0.01) * 5.0);
 }
+
+// 넓어진 도로 폭에 맞춘 도로 영역 감지 함수
+function onroad(x, z) {
+    for(let r of D.roads) {
+        for(let i = 0; i < r.p.length - 1; i++) {
+            let a = r.p[i], b = r.p[i+1];
+            let vx = b[0] - a[0], vz = b[2] - a[2];
+            let l2 = vx*vx + vz*vz;
+            let t = l2 ? Math.max(0, Math.min(1, ((x - a[0]) * vx + (z - a[2]) * vz) / l2)) : 0;
+            let dist = Math.hypot(x - (a[0] + t * vx), z - (a[2] + t * vz));
+            if(dist < r.w / 2 + 0.2) return true;
+        }
+    }
+    return false;
+}
+
+let freeCamMode = false;
+let camAngleX = 0.5, camAngleY = 0, camDist = 20;
+let isDragging = false, prevMousePos = {x: 0, y: 0};
+
+const camBtn = document.getElementById('camBtn');
+camBtn.onclick = () => {
+    freeCamMode = !freeCamMode;
+    camBtn.textContent = freeCamMode ? "시점: 마우스 자유 시점 (ON)" : "시점: 차량 추적 모드";
+    camBtn.style.background = freeCamMode ? "#2f855a" : "#2a4365";
+};
+
+window.addEventListener('mousedown', e => {
+    if(freeCamMode) { isDragging = true; prevMousePos = {x: e.clientX, y: e.clientY}; }
+});
+window.addEventListener('mouseup', () => { isDragging = false; });
+window.addEventListener('mousemove', e => {
+    if(freeCamMode && isDragging) {
+        let dx = e.clientX - prevMousePos.x;
+        let dy = e.clientY - prevMousePos.y;
+        camAngleY -= dx * 0.005;
+        camAngleX = Math.max(0.1, Math.min(1.5, camAngleX - dy * 0.005));
+        prevMousePos = {x: e.clientX, y: e.clientY};
+    }
+});
+window.addEventListener('wheel', e => {
+    if(freeCamMode) {
+        camDist = Math.max(5, Math.min(100, camDist + e.deltaY * 0.05));
+    }
+});
+
+const target = new THREE.Vector3();
+let last = performance.now();
 
 function animate(now) {
     requestAnimationFrame(animate);
@@ -273,30 +280,38 @@ function animate(now) {
     let f = keys.w || keys.arrowup || touch.f, b = keys.s || keys.arrowdown || touch.b;
     let L = keys.a || keys.arrowleft || touch.l, R = keys.d || keys.arrowright || touch.r;
     
-    if(f) v = Math.min(18, v + 7 * dt);
-    else if(b) v = Math.max(-5, v - 9 * dt);
-    else v *= Math.pow(.985, dt * 60);
+    if(f) v = Math.min(15, v + 6 * dt);
+    else if(b) v = Math.max(-4, v - 8 * dt);
+    else v *= Math.pow(.98, dt * 60);
     
     let steering = (R ? 1 : 0) - (L ? 1 : 0);
-    yaw += steering * v * .055 * dt;
+    yaw += steering * v * .05 * dt;
     car.rotation.y = yaw;
     
     let nx = car.position.x + Math.sin(yaw) * v * dt;
     let nz = car.position.z + Math.cos(yaw) * v * dt;
     
-    // 이동 위치의 고도를 실시간 반영하여 오르막/내리막 구현
-    let ny = getTerrainHeight(nx, nz) + 0.3;
+    if(Math.abs(v) < 0.1 || onroad(nx, nz)) {
+        car.position.x = nx;
+        car.position.z = nz;
+        car.position.y = getTerrainHeight(nx, nz) + 0.3;
+        msg.textContent = '광폭 도로 위에서 주행 중';
+    } else {
+        v = 0;
+        msg.textContent = '⚠️ 도로 밖으로 나갈 수 없습니다!';
+    }
     
-    car.position.x = nx;
-    car.position.z = nz;
-    car.position.y = ny;
-    
-    msg.textContent = '입체 지형 주행 중 (오르막/내리막 반영)';
-    
-    // 카메라 추적
-    camera.position.lerp(new THREE.Vector3(car.position.x - Math.sin(yaw) * 10, car.position.y + 5, car.position.z - Math.cos(yaw) * 10), .1);
-    target.set(car.position.x, car.position.y + 1, car.position.z);
-    camera.lookAt(target);
+    if(!freeCamMode) {
+        camera.position.lerp(new THREE.Vector3(car.position.x - Math.sin(yaw) * 9, car.position.y + 4.5, car.position.z - Math.cos(yaw) * 9), .1);
+        target.set(car.position.x, car.position.y + 1, car.position.z);
+        camera.lookAt(target);
+    } else {
+        let cx = car.position.x + Math.sin(camAngleY) * camDist * Math.sin(camAngleX);
+        let cy = car.position.y + Math.cos(camAngleX) * camDist;
+        let cz = car.position.z + Math.cos(camAngleY) * camDist * Math.sin(camAngleX);
+        camera.position.set(cx, cy, cz);
+        camera.lookAt(car.position);
+    }
     
     document.getElementById('spd').textContent = Math.round(Math.abs(v) * 3.6);
     renderer.render(scene, camera);
@@ -313,4 +328,4 @@ window.addEventListener('resize', () => {
     html = html.replace("__DATA__", json.dumps(data, ensure_ascii=False))
     components.html(html, height=720, scrolling=False)
 else:
-    st.info("왼쪽 사이드바에서 도시와 주소를 입력하고 **'도시 불러오기'** 버튼을 누르세요. (예: 서울특별시 종로구, 부산광역시 해운대구)")
+    st.info("왼쪽 사이드바에서 도시와 주소를 입력하고 **'도시 불러오기'** 버튼을 누르세요.")

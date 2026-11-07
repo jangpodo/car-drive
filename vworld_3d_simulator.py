@@ -35,7 +35,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/18.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/19.0"},
         timeout=25
     )
     response.raise_for_status()
@@ -69,7 +69,7 @@ def get_osm(lat, lon, radius_m):
         try:
             response = requests.post(
                 endpoint, data=query,
-                headers={"User-Agent": "Student3DDrivingSimulator/18.0"},
+                headers={"User-Agent": "Student3DDrivingSimulator/19.0"},
                 timeout=110
             )
             response.raise_for_status()
@@ -224,9 +224,9 @@ const material=(color)=>new THREE.MeshLambertMaterial({color,side:THREE.DoubleSi
 const groundMat=material(0x7fa27f); 
 const roadMat=material(0x343638);
 const bridgeMat=material(0x42464a);
-const waterMat=material(0x3a75c4); // 선명하고 리얼한 파란색 물 수면 재질
-const riverBedMat=material(0x4a3b2c); // 강바닥 흙 색상
-const riverBankMat=material(0x5a7a55); // 강둑 경사면
+const waterMat=material(0x3a75c4); 
+const riverBedMat=material(0x4a3b2c); 
+const riverBankMat=material(0x5a7a55); 
 const markingMat=material(0xd8d6c9);
 const treeMat=material(0x3e5e3b); 
 const trunkMat=material(0x5c4938);
@@ -239,8 +239,7 @@ buildingTexture.wrapT = THREE.RepeatWrapping;
 buildingTexture.repeat.set(1, 3);
 const buildingMat = new THREE.MeshLambertMaterial({ map: buildingTexture });
 
-// 좌표 (x, z)가 물길 영역 근처인지 확인하는 거리 계산 함수
-function isPointNearWater(x, z, margin = 14.0){
+function isPointNearWater(x, z, margin = 8.0){
   for(let w of DATA.water){
     let pts = w.points;
     for(let i=0; i<pts.length-1; i++){
@@ -254,7 +253,7 @@ function isPointNearWater(x, z, margin = 14.0){
   return false;
 }
 
-// [핵심] 하나의 거대한 판 대신 강 영역을 잘라낸 여러 조각(그리드 분할) 타일 바닥 생성
+// 분할 바닥 타일 생성 (강 영역 구멍 뚫림)
 function createSegmentedGround(){
   const tileSize = 50; 
   const range = 1000;
@@ -262,8 +261,7 @@ function createSegmentedGround(){
     for(let z = -range; z < range; z += tileSize){
       let cx = x + tileSize/2;
       let cz = z + tileSize/2;
-      // 강 영역과 중첩되는 바닥 타일은 과감히 삭제하여 강이 아래로 뚫리게 만듦
-      if(!isPointNearWater(cx, cz, 25.0)){
+      if(!isPointNearWater(cx, cz, 16.0)){
         const tile = new THREE.Mesh(new THREE.PlaneGeometry(tileSize, tileSize), groundMat);
         tile.rotation.x = -Math.PI/2;
         tile.position.set(cx, -0.01, cz);
@@ -274,12 +272,11 @@ function createSegmentedGround(){
 }
 createSegmentedGround();
 
-// 초록 바닥 풀 장식 배치
 function addSceneryDetails(){
   for(let i=0; i<180; i++){
     let rx = (Math.random() - 0.5) * 1200;
     let rz = (Math.random() - 0.5) * 1200;
-    if(!isPointNearWater(rx, rz, 15.0)){
+    if(!isPointNearWater(rx, rz, 12.0)){
       const grass = new THREE.Mesh(new THREE.DodecahedronGeometry(0.8), grassMat);
       grass.position.set(rx, 0, rz);
       scene.add(grass);
@@ -447,7 +444,7 @@ for(const r of DATA.roads){
 
 for(const b of DATA.buildings) drawBuilding(b.points, b.height||10);
 
-// [완벽 구현] 파여진 강 구덩이 (강바닥 + 양옆 경사 둑 + 파란색 물 수면)
+// [수정] 컴팩트해진 강 폭 (riverWidth = 8.0, bankWidth = 4.0)
 for(const w of DATA.water){
   for(let i=0;i<w.points.length-1;i++){
     const a = w.points[i], b = w.points[i+1];
@@ -455,28 +452,28 @@ for(const w of DATA.water){
     if(len < 0.05) continue;
     const nx = -dz/len, nz = dx/len;
     
-    const riverWidth = 16.0;
-    const bankWidth = 8.0;
+    const riverWidth = 8.0;
+    const bankWidth = 4.0;
 
-    // 1. 흙 색상 강바닥 (y = -1.2m 깊숙이 파여짐)
-    roadQuadSloped(a, b, riverWidth, riverBedMat, -1.2, -1.2);
+    // 1. 강바닥 (y = -0.8m)
+    roadQuadSloped(a, b, riverWidth, riverBedMat, -0.8, -0.8);
     
-    // 2. 파란색 강물 수면 (y = -0.4m 높이에 찰랑거리게 차오름)
-    roadQuadSloped(a, b, riverWidth - 0.5, waterMat, -0.4, -0.4);
+    // 2. 파란색 강물 수면 (y = -0.35m)
+    roadQuadSloped(a, b, riverWidth - 0.4, waterMat, -0.35, -0.35);
 
-    // 3. 왼쪽 경사 둑 (지면 y=0.0m -> 강바닥 y=-1.2m 부드럽게 파인 둑)
+    // 3. 왼쪽 경사 둑
     const oa1 = [a[0] + nx * (riverWidth/2 + bankWidth), a[1] + nz * (riverWidth/2 + bankWidth)];
     const ob1 = [b[0] + nx * (riverWidth/2 + bankWidth), b[1] + nz * (riverWidth/2 + bankWidth)];
     const ia1 = [a[0] + nx * (riverWidth/2), a[1] + nz * (riverWidth/2)];
     const ib1 = [b[0] + nx * (riverWidth/2), b[1] + nz * (riverWidth/2)];
-    bankQuad(oa1, ob1, ia1, ib1, 0.0, -1.2, riverBankMat);
+    bankQuad(oa1, ob1, ia1, ib1, 0.0, -0.8, riverBankMat);
 
     // 4. 오른쪽 경사 둑
     const oa2 = [a[0] - nx * (riverWidth/2 + bankWidth), a[1] - nz * (riverWidth/2 + bankWidth)];
     const ob2 = [b[0] - nx * (riverWidth/2 + bankWidth), b[1] - nz * (riverWidth/2 + bankWidth)];
     const ia2 = [a[0] - nx * (riverWidth/2), a[1] - nz * (riverWidth/2)];
     const ib2 = [b[0] - nx * (riverWidth/2), b[1] - nz * (riverWidth/2)];
-    bankQuad(oa2, ob2, ia2, ib2, 0.0, -1.2, riverBankMat);
+    bankQuad(oa2, ob2, ia2, ib2, 0.0, -0.8, riverBankMat);
   }
 }
 
@@ -534,9 +531,11 @@ function buildingCollision(x,z,yaw){
   return false;
 }
 
+// [핵심] 차량 위치가 다리 위인지, 일반 땅인지, 아니면 물(구덩이) 영역인지 판단하여 높이 적용
 function getCarHeight(x, z){
-  let closestY = 0.035;
-  let minDist = 999;
+  // 1. 다리 위인지 확인
+  let bridgeY = null;
+  let minBridgeDist = 999;
   for(let r of DATA.roads){
     if(!r.bridge) continue;
     let pts = r.points;
@@ -551,19 +550,36 @@ function getCarHeight(x, z){
       let a = pts[i], b = pts[i+1], len = segs[i];
       if(len < 0.05) continue;
       let d = distToSeg(x, z, a, b);
-      if(d < r.width/2 && d < minDist){
-        minDist = d;
+      if(d < r.width/2 && d < minBridgeDist){
+        minBridgeDist = d;
         let t = 0;
         let vx = b[0]-a[0], vz = b[1]-a[1];
         let l2 = vx*vx + vz*vz;
         if(l2 > 0) t = Math.max(0, Math.min(1, ((x - a[0])*vx + (z - a[1])*vz)/l2));
-        let segDist = accum + t * len;
-        closestY = getRoadHeightAtDist(segDist, totalLen, true);
+        bridgeY = getRoadHeightAtDist(accum + t * len, totalLen, true);
       }
       accum += len;
     }
   }
-  return minDist < 15 ? closestY : 0.035;
+  if(minBridgeDist < 12 && bridgeY !== null) return bridgeY;
+
+  // 2. 다리가 없다면 물(구덩이) 영역인지 확인 -> 구덩이 안쪽이면 차가 바닥(-0.8)으로 푹 빠짐!
+  for(let w of DATA.water){
+    let pts = w.points;
+    for(let i=0; i<pts.length-1; i++){
+      let a = pts[i], b = pts[i+1];
+      let d = distToSeg(x, z, a, b);
+      if(d < 4.0){ // 강 중심부 구덩이 안
+        return -0.8;
+      } else if(d < 8.0){ // 강둑 경사면
+        let ratio = (d - 4.0) / 4.0; // 0(강바닥) ~ 1(지면)
+        return -0.8 + ratio * 0.8;
+      }
+    }
+  }
+
+  // 3. 일반 평지
+  return 0.035;
 }
 
 let startRoad=DATA.roads.find(r=>r.points.length>=2);

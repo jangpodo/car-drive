@@ -16,6 +16,10 @@ with st.sidebar:
     st.markdown("- **유적지/문화재 중심:** 서울 종로구, 경주시")
     st.markdown("- **특별시/광역시:** 서울 강남구, 부산 해운대구")
     st.markdown("- **경기도:** 수원시 팔달구, 성남시 분당구")
+    st.markdown("- **강원도:** 강릉시 중앙동, 춘천시")
+    st.markdown("- **충청도:** 천안시 서북구, 청주시 흥덕구")
+    st.markdown("- **전라도:** 전주시 완산구, 여수시")
+    st.markdown("- **경상도:** 포항시 북구")
     st.markdown("---")
 
     radius = st.select_slider(
@@ -32,7 +36,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/26.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/27.0"},
         timeout=25
     )
     response.raise_for_status()
@@ -71,7 +75,7 @@ def get_osm(lat, lon, radius_m):
         try:
             response = requests.post(
                 endpoint, data=query,
-                headers={"User-Agent": "Student3DDrivingSimulator/26.0"},
+                headers={"User-Agent": "Student3DDrivingSimulator/27.0"},
                 timeout=110
             )
             response.raise_for_status()
@@ -107,13 +111,11 @@ def road_width_m(tags):
     }
     return widths.get(highway, 6.0)
 
-# 요청하신 카테고리별 색상 분류 함수 (주차장 제외, 문화재 포함)
 def get_category_and_color(tags):
     name = tags.get("name", "").strip()
     if not name or name.isdigit():
         return None, None
 
-    # 제외 대상 (주차장, 일반 아파트, 동 번호, 단순 빌딩, 교회 등)
     if "주차장" in name or "parking" in tags.get("amenity", ""):
         return None, None
     if "아파트" in name or "교회" in name or "빌딩" in name or "동" in name:
@@ -139,7 +141,7 @@ def get_category_and_color(tags):
         return name, "#e53935"
 
     # 4. 공원·산·문화재/유적지 (초록색 #4caf50)
-    if leisure in ["park", "garden"] or historic != "" or tourism in ["attraction", "viewpoint"] or any(k in name for k in ["공원", "산", "문화재", "유적", "궁", "왕릉", "historic"]):
+    if leisure in ["park", "garden"] or historic != "" or tourism in ["attraction", "viewpoint"] or any(k in name for k in ["공원", "산", "문화재", "유적", "궁", "왕릉"]):
         return name, "#4caf50"
 
     # 5. 나머지 주요 시설 (박물관, 시청, 법원, 도서관 등) -> 보라색 #9c27b0

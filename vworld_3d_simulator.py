@@ -11,7 +11,7 @@ st.caption("실제 지도 도로·건물 데이터를 바탕으로 구현된 3D 
 with st.sidebar:
     place = st.text_input("도시 / 주소 입력", "서울특별시 강남구")
     
-    # [추가] 지역별 유명 도시 예시 안내
+    # 지역별 유명 도시 예시 안내
     st.markdown("---")
     st.markdown("📌 **추천 도시 입력 예시**")
     st.markdown("- **특별시/광역시:** 서울 강남구, 부산 해운대구")
@@ -36,7 +36,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/14.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/15.0"},
         timeout=25
     )
     response.raise_for_status()
@@ -70,7 +70,7 @@ def get_osm(lat, lon, radius_m):
         try:
             response = requests.post(
                 endpoint, data=query,
-                headers={"User-Agent": "Student3DDrivingSimulator/14.0"},
+                headers={"User-Agent": "Student3DDrivingSimulator/15.0"},
                 timeout=110
             )
             response.raise_for_status()
@@ -253,17 +253,18 @@ function addSceneryDetails(){
 }
 addSceneryDetails();
 
-function roadQuad(a,b,width,mat,y=0.04){
-  const dx=b[0]-a[0],dz=b[1]-a[1],len=Math.hypot(dx,dz);
+// 다리 경사로(램프)를 반영하여 시작/끝 높이를 부드럽게 연결하는 도로 생성 함수
+function roadQuadSloped(a, b, width, mat, yA, yB){
+  const dx=b[0]-a[0], dz=b[1]-a[1], len=Math.hypot(dx,dz);
   if(len<.05)return;
-  const nx=-dz/len,nz=dx/len,half=width/2;
-  const p1=[a[0]+nx*half,a[1]+nz*half];
-  const p2=[a[0]-nx*half,a[1]-nz*half];
-  const p3=[b[0]-nx*half,b[1]-nz*half];
-  const p4=[b[0]+nx*half,b[1]+nz*half];
+  const nx=-dz/len, nz=dx/len, half=width/2;
+  const p1=[a[0]+nx*half, a[1]+nz*half];
+  const p2=[a[0]-nx*half, a[1]-nz*half];
+  const p3=[b[0]-nx*half, b[1]-nz*half];
+  const p4=[b[0]+nx*half, b[1]+nz*half];
   const vertices=new Float32Array([
-    p1[0],y,p1[1],p2[0],y,p2[1],p3[0],y,p3[1],
-    p1[0],y,p1[1],p3[0],y,p3[1],p4[0],y,p4[1]
+    p1[0], yA, p1[1],  p2[0], yA, p2[1],  p3[0], yB, p3[1],
+    p1[0], yA, p1[1],  p3[0], yB, p3[1],  p4[0], yB, p4[1]
   ]);
   const geo=new THREE.BufferGeometry();
   geo.setAttribute("position",new THREE.BufferAttribute(vertices,3));
@@ -271,31 +272,43 @@ function roadQuad(a,b,width,mat,y=0.04){
   scene.add(new THREE.Mesh(geo,mat));
 }
 
-function lineSegment(a,b,width,color,y){
-  const dx=b[0]-a[0],dz=b[1]-a[1],len=Math.hypot(dx,dz);
+function lineSegmentSloped(a, b, width, color, yA, yB){
+  const dx=b[0]-a[0], dz=b[1]-a[1], len=Math.hypot(dx,dz);
   if(len<.05)return;
-  const nx=-dz/len,nz=dx/len,half=width/2;
+  const nx=-dz/len, nz=dx/len, half=width/2;
   const v=new Float32Array([
-    a[0]+nx*half,y,a[1]+nz*half,
-    a[0]-nx*half,y,a[1]-nz*half,
-    b[0]-nx*half,y,b[1]-nz*half,
-    a[0]+nx*half,y,a[1]+nz*half,
-    b[0]-nx*half,y,b[1]-nz*half,
-    b[0]+nx*half,y,b[1]+nz*half
+    a[0]+nx*half, yA, a[1]+nz*half,
+    a[0]-nx*half, yA, a[1]-nz*half,
+    b[0]-nx*half, yB, b[1]-nz*half,
+    a[0]+nx*half, yA, a[1]+nz*half,
+    b[0]-nx*half, yB, b[1]-nz*half,
+    b[0]+nx*half, yB, b[1]+nz*half
   ]);
   const g=new THREE.BufferGeometry();g.setAttribute("position",new THREE.BufferAttribute(v,3));g.computeVertexNormals();
   scene.add(new THREE.Mesh(g,color));
 }
-function addRoadMarkings(points,width,highway){
+
+function addRoadMarkings(points, width, highway, isBridge, totalLen){
   if(width<7 || highway==="residential" || highway==="living_street")return;
   const dashLen=5.5,gap=5.5;
+  let curDist=0;
   for(let i=0;i<points.length-1;i++){
     const a=points[i],b=points[i+1],dx=b[0]-a[0],dz=b[1]-a[1],len=Math.hypot(dx,dz);
+    const segStartDist = curDist;
+    curDist += len;
+    const segEndDist = curDist;
     if(len<12)continue;
     const ux=dx/len,uz=dz/len;
     for(let t=2;t<len-1;t+=dashLen+gap){
       const end=Math.min(t+dashLen,len-1);
-      lineSegment([a[0]+ux*t,a[1]+uz*t],[a[0]+ux*end,a[1]+uz*end],.12,markingMat,.065);
+      let yA = 0.065, yB = 0.065;
+      if(isBridge && totalLen > 0){
+        const d1 = segStartDist + t;
+        const d2 = segStartDist + end;
+        yA = getRoadHeightAtDist(d1, totalLen, true);
+        yB = getRoadHeightAtDist(d2, totalLen, true);
+      }
+      lineSegmentSloped([a[0]+ux*t,a[1]+uz*t],[a[0]+ux*end,a[1]+uz*end],.12,markingMat,yA,yB);
     }
   }
 }
@@ -322,29 +335,75 @@ function addTree(x,z){
   crown.position.set(x, 3.2*scale, z);scene.add(crown);
 }
 
-function addBridgeRails(points,width){
+function addBridgeRails(points,width,totalLen){
+  let curDist=0;
   for(let i=0;i<points.length-1;i++){
     const a=points[i],b=points[i+1],dx=b[0]-a[0],dz=b[1]-a[1],len=Math.hypot(dx,dz);
     if(len<.1)continue;
     const nx=-dz/len,nz=dx/len;
+    const segStart = curDist;
+    curDist += len;
+    const segEnd = curDist;
     for(const side of [-1,1]){
       const offset=width/2+.3;
+      const yA = getRoadHeightAtDist(segStart, totalLen, true);
+      const yB = getRoadHeightAtDist(segEnd, totalLen, true);
       const rail=new THREE.Mesh(new THREE.BoxGeometry(.18,.8,len),material(0x777b7e));
-      rail.position.set((a[0]+b[0])/2+nx*offset,.7,(a[1]+b[1])/2+nz*offset);
+      rail.position.set((a[0]+b[0])/2+nx*offset, (yA+yB)/2 + 0.4, (a[1]+b[1])/2+nz*offset);
       rail.rotation.y=Math.atan2(dx,dz);
+      // 경사각 반영
+      const slopeAngle = Math.atan2(yB - yA, len);
+      rail.rotation.x = slopeAngle;
       scene.add(rail);
     }
   }
 }
 
+// 다리 높이 계산 함수 (시작/끝 15% 구간은 경사로, 중앙은 1.8m 평지)
+function getRoadHeightAtDist(dist, totalLen, isBridge){
+  if(!isBridge || totalLen <= 0) return 0.035;
+  const rampLen = Math.min(15, totalLen * 0.25);
+  if(dist < rampLen){
+    return 0.035 + (1.8 - 0.035) * (dist / rampLen);
+  } else if(dist > totalLen - rampLen){
+    return 0.035 + (1.8 - 0.035) * ((totalLen - dist) / rampLen);
+  } else {
+    return 1.8;
+  }
+}
+
+// 전체 도로 세그먼트별 높이 데이터를 미리 계산하여 관리
+const bridgePaths = [];
+
 for(const r of DATA.roads){
   const pts=r.points;
-  const bridgeY=r.bridge?1.8:.035;
-  for(let i=0;i<pts.length-1;i++){
-    roadQuad(pts[i],pts[i+1],r.width,r.bridge?bridgeMat:roadMat,bridgeY);
+  let totalLen = 0;
+  let segLens = [];
+  for(let i=0; i<pts.length-1; i++){
+    let l = Math.hypot(pts[i+1][0]-pts[i][0], pts[i+1][1]-pts[i][1]);
+    segLens.push(l);
+    totalLen += l;
   }
-  addRoadMarkings(pts,r.width,r.highway);
-  if(r.bridge)addBridgeRails(pts,r.width);
+
+  let accum = 0;
+  for(let i=0;i<pts.length-1;i++){
+    const a=pts[i], b=pts[i+1], len=segLens[i];
+    if(len < 0.05) continue;
+    const dStart = accum;
+    accum += len;
+    const dEnd = accum;
+
+    const yA = getRoadHeightAtDist(dStart, totalLen, r.bridge);
+    const yB = getRoadHeightAtDist(dEnd, totalLen, r.bridge);
+
+    roadQuadSloped(a, b, r.width, r.bridge?bridgeMat:roadMat, yA, yB);
+
+    if(r.bridge){
+      bridgePaths.push({a: a, b: b, yA: yA, yB: yB, len: len});
+    }
+  }
+  addRoadMarkings(pts, r.width, r.highway, r.bridge, totalLen);
+  if(r.bridge) addBridgeRails(pts, r.width, totalLen);
 
   if(["primary","secondary","tertiary","trunk","residential"].includes(r.highway)){
     for(let i=0;i<pts.length-1;i++){
@@ -359,9 +418,14 @@ for(const r of DATA.roads){
     }
   }
 }
-for(const b of DATA.buildings)drawBuilding(b.points,b.height||10);
+
+for(const b of DATA.buildings) drawBuilding(b.points, b.height||10);
+
+// [수정] 파란 물을 바닥보다 자동차 높이만큼 밑에 있는 구덩이(-0.62m)로 가라앉혀 렌더링
 for(const w of DATA.water){
-  for(let i=0;i<w.points.length-1;i++)roadQuad(w.points[i],w.points[i+1],12,waterMat,-.08);
+  for(let i=0;i<w.points.length-1;i++){
+    roadQuadSloped(w.points[i], w.points[i+1], 16, waterMat, -0.62, -0.62);
+  }
 }
 
 const car=new THREE.Group();scene.add(car);
@@ -418,6 +482,39 @@ function buildingCollision(x,z,yaw){
   return false;
 }
 
+// 차량 위치에 따른 현재 도로/다리 높이 계산 (경사로 연동)
+function getCarHeight(x, z){
+  let closestY = 0;
+  let minDist = 999;
+  for(let r of DATA.roads){
+    if(!r.bridge) continue;
+    let pts = r.points;
+    let totalLen = 0;
+    let segs = [];
+    for(let i=0; i<pts.length-1; i++){
+      let l = Math.hypot(pts[i+1][0]-pts[i][0], pts[i+1][1]-pts[i][1]);
+      segs.push(l); totalLen += l;
+    }
+    let accum = 0;
+    for(let i=0; i<pts.length-1; i++){
+      let a = pts[i], b = pts[i+1], len = segs[i];
+      if(len < 0.05) continue;
+      let d = distToSeg(x, z, a, b);
+      if(d < r.width/2 && d < minDist){
+        minDist = d;
+        let t = 0;
+        let vx = b[0]-a[0], vz = b[1]-a[1];
+        let l2 = vx*vx + vz*vz;
+        if(l2 > 0) t = Math.max(0, Math.min(1, ((x - a[0])*vx + (z - a[1])*vz)/l2));
+        let segDist = accum + t * len;
+        closestY = getRoadHeightAtDist(segDist, totalLen, true);
+      }
+      accum += len;
+    }
+  }
+  return minDist < 15 ? closestY : 0.035;
+}
+
 let startRoad=DATA.roads.find(r=>r.points.length>=2);
 let start=[0,0],yaw=0;
 if(startRoad){
@@ -426,7 +523,7 @@ if(startRoad){
   start=[(a[0]+b[0])/2,(a[1]+b[1])/2];
   yaw=Math.atan2(b[0]-a[0],b[1]-a[1]);
 }
-car.position.set(start[0],0,start[1]);car.rotation.y=yaw;
+car.position.set(start[0], 0.035, start[1]); car.rotation.y=yaw;
 
 let velocity=0,steer=0;
 const keys={};
@@ -497,11 +594,13 @@ function animate(now){
   
   if(!buildingCollision(nx,nz,yaw)){
     car.position.x=nx;car.position.z=nz;
+    car.position.y = getCarHeight(nx, nz); // 다리 경사로 높이에 맞춰 차량 높이 조절
     statusEl.textContent="주행 중";
   }else{
     velocity = -velocity * 0.35; 
     car.position.x -= Math.sin(yaw) * Math.abs(velocity) * dt * 2.5;
     car.position.z -= Math.cos(yaw) * Math.abs(velocity) * dt * 2.5;
+    car.position.y = getCarHeight(car.position.x, car.position.z);
     statusEl.textContent="💥 쾅! 건물에 부딪혀 뒤로 튕겨 나갑니다!";
   }
   speedEl.textContent=Math.round(Math.abs(velocity)*3.6);

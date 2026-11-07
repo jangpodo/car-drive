@@ -68,7 +68,6 @@ def get_osm(lat, lon, radius_m):
     raise RuntimeError(f"OSM 지도 요청 실패: {last_error}")
 
 def road_width_m(tags):
-    """OSM tags가 있으면 차선 수/폭을 우선 사용하고, 누락되면 도로 종류별 현실적인 폭을 추정."""
     highway = tags.get("highway", "")
     try:
         lanes = int(str(tags.get("lanes", "")).split(";")[0])
@@ -83,10 +82,8 @@ def road_width_m(tags):
         pass
 
     if lanes > 0:
-        # 차로 폭 약 3.5m + 양쪽 여유 공간
         return min(max(lanes * 3.5 + 1.0, 5.0), 45.0)
 
-    # OSM 차로 정보가 없을 때 도로 분류에 따른 폭 추정치
     widths = {
         "motorway": 26.0, "trunk": 20.0, "primary": 14.0,
         "secondary": 11.0, "tertiary": 9.0,
@@ -108,7 +105,6 @@ def convert_osm(osm, center_lat, center_lon):
         if len(geometry) < 2:
             continue
 
-        # 좌표를 실제 미터 단위의 지역 좌표로 변환: 1 game unit = 1 meter
         points = []
         for point in geometry:
             x = (float(point["lon"]) - center_lon) * meters_lon
@@ -217,17 +213,22 @@ const material=(color)=>new THREE.MeshLambertMaterial({color,side:THREE.DoubleSi
 const groundMat=material(0x879587);
 const roadMat=material(0x343638);
 const bridgeMat=material(0x42464a);
-const buildingMat=material(0x888b8e);
 const waterMat=material(0x527f9b);
 const markingMat=material(0xd8d6c9);
-const sidewalkMat=material(0x777a7c);
 const treeMat=material(0x526c50);
 const trunkMat=material(0x5c4938);
+
+// 실제 건물 외관(창문/벽돌 텍스처 이미지) 로드
+const textureLoader = new THREE.TextureLoader();
+const buildingTexture = textureLoader.load('https://threejs.org/examples/textures/brick_diffuse.jpg');
+buildingTexture.wrapS = THREE.RepeatWrapping;
+buildingTexture.wrapT = THREE.RepeatWrapping;
+buildingTexture.repeat.set(1, 3);
+const buildingMat = new THREE.MeshLambertMaterial({ map: buildingTexture });
 
 const ground=new THREE.Mesh(new THREE.PlaneGeometry(20000,20000),groundMat);
 ground.rotation.x=-Math.PI/2;ground.position.y=-.15;scene.add(ground);
 
-// 정확한 실제 미터 좌표를 이용해 도로 사각형을 만듭니다.
 function roadQuad(a,b,width,mat,y=0.04){
   const dx=b[0]-a[0],dz=b[1]-a[1],len=Math.hypot(dx,dz);
   if(len<.05)return;
@@ -246,7 +247,6 @@ function roadQuad(a,b,width,mat,y=0.04){
   scene.add(new THREE.Mesh(geo,mat));
 }
 
-// 도로에 얇은 중앙/차선 표시를 추가해 운전 게임 느낌을 줍니다.
 function lineSegment(a,b,width,color,y){
   const dx=b[0]-a[0],dz=b[1]-a[1],len=Math.hypot(dx,dz);
   if(len<.05)return;
@@ -269,7 +269,6 @@ function addRoadMarkings(points,width,highway){
     const a=points[i],b=points[i+1],dx=b[0]-a[0],dz=b[1]-a[1],len=Math.hypot(dx,dz);
     if(len<12)continue;
     const ux=dx/len,uz=dz/len;
-    // 넓은 도로에는 중앙 점선을 표시
     for(let t=2;t<len-1;t+=dashLen+gap){
       const end=Math.min(t+dashLen,len-1);
       lineSegment([a[0]+ux*t,a[1]+uz*t],[a[0]+ux*end,a[1]+uz*end],.12,markingMat,.065);
@@ -277,7 +276,6 @@ function addRoadMarkings(points,width,highway){
   }
 }
 
-// 건물 외곽 좌표를 도로와 같은 방향으로 맞추고 실제 높이(m)만큼 올립니다.
 function drawBuilding(points,height){
   if(points.length<3)return;
   const shape=new THREE.Shape();
@@ -291,7 +289,6 @@ function drawBuilding(points,height){
   scene.add(mesh);
 }
 
-// 가로수는 너무 빽빽해지지 않도록 실제 도로를 따라 일정 간격으로 배치합니다.
 function addTree(x,z,scale=1){
   const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.12*scale,.16*scale,1.5*scale,5),trunkMat);
   trunk.position.set(x,.75*scale,z);scene.add(trunk);
@@ -313,7 +310,6 @@ function addBridgeRails(points,width){
   }
 }
 
-// 실제 OSM 도로를 렌더링. bridge 태그는 도로를 조금 높여 다리로 표현.
 for(const r of DATA.roads){
   const pts=r.points;
   const bridgeY=r.bridge?1.8:.035;
@@ -323,7 +319,6 @@ for(const r of DATA.roads){
   addRoadMarkings(pts,r.width,r.highway);
   if(r.bridge)addBridgeRails(pts,r.width);
 
-  // 큰 도로 위주로 나무를 간격 있게 배치 (렌더링 부하 감소)
   if(["primary","secondary","tertiary","trunk"].includes(r.highway)){
     for(let i=0;i<pts.length-1;i++){
       const a=pts[i],b=pts[i+1],dx=b[0]-a[0],dz=b[1]-a[1],len=Math.hypot(dx,dz);
@@ -342,7 +337,6 @@ for(const w of DATA.water){
   for(let i=0;i<w.points.length-1;i++)roadQuad(w.points[i],w.points[i+1],12,waterMat,-.08);
 }
 
-// 승용차 모델: 길이 4.5m, 폭 1.8m, 높이 약 1.5m
 const car=new THREE.Group();scene.add(car);
 const carPaint=material(0xb83b3b),glass=material(0x5e747e),tireMat=material(0x202020),rimMat=material(0x96999b);
 const body=new THREE.Mesh(new THREE.BoxGeometry(1.82,.62,4.45),carPaint);
@@ -361,7 +355,6 @@ for(const x of [-.94,.94])for(const z of [-1.42,1.42]){
   rim.rotation.z=Math.PI/2;rim.position.set(x,.36,z);car.add(rim);
 }
 
-// 다각형 내부 및 경계 거리 기반 건물 충돌
 function pointInPolygon(x,z,poly){
   let inside=false;
   for(let i=0,j=poly.length-1;i<poly.length;j=i++){
@@ -377,7 +370,6 @@ function distToSeg(px,pz,a,b){
   return Math.hypot(px-(a[0]+t*vx),pz-(a[1]+t*vz));
 }
 function buildingCollision(x,z,yaw){
-  // 차량 앞/뒤/좌/우 및 모서리 점을 검사하여 차체가 건물에 들어가는 것을 막음
   const halfL=2.15,halfW=.95;
   const corners=[
     [ halfW, halfL],[ -halfW, halfL],
@@ -399,7 +391,6 @@ function buildingCollision(x,z,yaw){
   return false;
 }
 
-// 시작 위치를 도로 중심선에서 고르고 도로 방향에 맞춰 차를 배치
 let startRoad=DATA.roads.find(r=>r.points.length>=2);
 let start=[0,0],yaw=0;
 if(startRoad){
@@ -410,7 +401,6 @@ if(startRoad){
 }
 car.position.set(start[0],0,start[1]);car.rotation.y=yaw;
 
-// 실제 승용차의 휠베이스 약 2.7m에 맞춘 조향
 let velocity=0,steer=0;
 const keys={};
 window.addEventListener("keydown",e=>{
@@ -427,7 +417,6 @@ function bindButton(id,key){
 }
 bindButton("forward","f");bindButton("back","b");bindButton("left","l");bindButton("right","r");
 
-// 카메라: 추적 모드에서 차 뒤를 따라가되 드래그한 시점은 유지
 let follow=true,orbitYaw=yaw+Math.PI,orbitPitch=.28,camDist=13;
 let dragging=false,lastX=0,lastY=0;
 renderer.domElement.addEventListener("pointerdown",e=>{
@@ -464,13 +453,13 @@ function animate(now){
   const left=keys.a||keys.arrowleft||touch.l;
   const right=keys.d||keys.arrowright||touch.r;
 
-  if(forward)velocity=Math.min(30,velocity+5.5*dt);       // 30m/s ≈ 108km/h
+  if(forward)velocity=Math.min(30,velocity+5.5*dt);
   else if(backward)velocity=Math.max(-5,velocity-7.5*dt);
   else velocity*=Math.pow(.985,dt*60);
 
-  const steerInput=(right?1:0)-(left?1:0);
+  // [수정됨] A와 D 조향 방향 반전 적용 ((left?1:0)-(right?1:0))
+  const steerInput=(left?1:0)-(right?1:0);
   steer=THREE.MathUtils.damp(steer,steerInput,4.5,dt);
-  // steering wheel angle and wheelbase based turning; no intersection restriction
   const steerAngle=steer*.48;
   const wheelbase=2.7;
   if(Math.abs(velocity)>.05)yaw+=velocity/wheelbase*Math.tan(steerAngle)*dt;
@@ -487,7 +476,6 @@ function animate(now){
   }
   speedEl.textContent=Math.round(Math.abs(velocity)*3.6);
 
-  // camera orbit offset is persistent while dragging; C toggles tracking/free view
   if(follow){
     const desiredYaw=orbitYaw;
     const horizontal=camDist*Math.cos(orbitPitch);
@@ -499,7 +487,6 @@ function animate(now){
     camera.position.lerp(desired,.13);
     target.set(car.position.x,car.position.y+1.0,car.position.z);
   }else{
-    // free view remains centered on vehicle but allows orbit/zoom independently
     const horizontal=camDist*Math.cos(orbitPitch);
     const desired=new THREE.Vector3(
       car.position.x+Math.sin(orbitYaw)*horizontal,
@@ -524,4 +511,3 @@ window.addEventListener("resize",()=>{
     components.html(html, height=780, scrolling=False)
 else:
     st.info("왼쪽에서 도시/주소를 입력하고 ‘도시 불러오기’를 눌러 주세요.")
-    st.markdown("예: 서울특별시 강남구, 부산광역시 해운대구, 인천국제공항")

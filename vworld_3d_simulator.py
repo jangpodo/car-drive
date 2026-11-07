@@ -3,6 +3,7 @@ import streamlit.components.v1 as components
 import requests
 import math
 import json
+import re
 
 st.set_page_config(page_title="3D 도시 운전 시뮬레이터", layout="wide")
 st.title("🚗 3D 도시 운전 시뮬레이터")
@@ -35,7 +36,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/23.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/24.0"},
         timeout=25
     )
     response.raise_for_status()
@@ -69,7 +70,7 @@ def get_osm(lat, lon, radius_m):
         try:
             response = requests.post(
                 endpoint, data=query,
-                headers={"User-Agent": "Student3DDrivingSimulator/23.0"},
+                headers={"User-Agent": "Student3DDrivingSimulator/24.0"},
                 timeout=110
             )
             response.raise_for_status()
@@ -104,6 +105,23 @@ def road_width_m(tags):
         "unclassified": 6.0, "living_street": 5.5
     }
     return widths.get(highway, 6.0)
+
+# 아파트, 동 번호, 교회, 단순 숫자, 빌딩 이름을 제외하는 필터 함수
+def is_valid_landmark_name(name):
+    if not name:
+        return False
+    name_str = name.strip()
+    if name_str.isdigit():
+        return False
+    if "아파트" in name_str:
+        return False
+    if "교회" in name_str:
+        return False
+    if "빌딩" in name_str:
+        return False
+    if re.search(r'\d+동', name_str):
+        return False
+    return True
 
 def convert_osm(osm, center_lat, center_lon):
     result = {"roads": [], "buildings": [], "water": []}
@@ -145,14 +163,16 @@ def convert_osm(osm, center_lat, center_lon):
                 except (ValueError, TypeError):
                     height = 10.0
             
-            # 건물의 중심 좌표 계산
             cx = sum(p[0] for p in points) / len(points)
             cz = sum(p[1] for p in points) / len(points)
             
+            raw_name = tags.get("name", "")
+            building_name = raw_name if is_valid_landmark_name(raw_name) else ""
+
             result["buildings"].append({
                 "points": points,
                 "height": min(max(height, 3.0), 180.0),
-                "name": tags.get("name", ""),
+                "name": building_name,
                 "cx": cx,
                 "cz": cz
             })
@@ -197,7 +217,7 @@ button{font-size:18px;padding:12px 16px;background:#26313b;color:white;border:0;
 #camBtn{position:absolute;right:12px;bottom:12px;z-index:10;font-size:13px;padding:10px}
 #game canvas{display:block;touch-action:none}
 
-/* 랜드마크 빨간 핀 마커 스타일 (빨간 배경 + 중앙 흰 원[cite: 6]) */
+/* 랜드마크 빨간 핀 마커 스타일 */
 #markers-container {
   position: absolute;
   top: 0; left: 0; width: 100%; height: 100%;
@@ -299,7 +319,6 @@ buildingTexture.wrapT = THREE.RepeatWrapping;
 buildingTexture.repeat.set(1, 3);
 const buildingMat = new THREE.MeshLambertMaterial({ map: buildingTexture });
 
-// 단일 평면 초록 바닥 생성
 const ground=new THREE.Mesh(new THREE.PlaneGeometry(20000,20000),groundMat);
 ground.rotation.x=-Math.PI/2;
 ground.position.y=-0.15;
@@ -462,7 +481,6 @@ for(const r of DATA.roads){
   }
 }
 
-// [핵심] 이름이 있는 주요 건물들에 빨간 핀 마커 DOM 엘리먼트 생성 및 배치
 const landmarkMarkers = [];
 for(const b of DATA.buildings) {
   drawBuilding(b.points, b.height||10);
@@ -691,14 +709,12 @@ function animate(now){
   camera.lookAt(target);
   renderer.render(scene,camera);
 
-  // [핵심] 3D 건물의 상공 좌표를 2D 화면 좌표로 투영하여 랜드마크 핀 마커 위치 업데이트
   const widthHalf = game.clientWidth / 2;
   const heightHalf = game.clientHeight / 2;
 
   for(const m of landmarkMarkers){
     tempVector.copy(m.position);
     tempVector.project(camera);
-    // 화면 안에 있고 카메라 앞에 있는 경우에만 표시
     if(tempVector.z < 1.0){
       const x = (tempVector.x * widthHalf) + widthHalf;
       const y = -(tempVector.y * heightHalf) + heightHalf;

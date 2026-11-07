@@ -36,7 +36,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/15.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/16.0"},
         timeout=25
     )
     response.raise_for_status()
@@ -70,7 +70,7 @@ def get_osm(lat, lon, radius_m):
         try:
             response = requests.post(
                 endpoint, data=query,
-                headers={"User-Agent": "Student3DDrivingSimulator/15.0"},
+                headers={"User-Agent": "Student3DDrivingSimulator/16.0"},
                 timeout=110
             )
             response.raise_for_status()
@@ -226,6 +226,7 @@ const groundMat=material(0x7fa27f);
 const roadMat=material(0x343638);
 const bridgeMat=material(0x42464a);
 const waterMat=material(0x527f9b);
+const riverBankMat=material(0x5a6e55); // 강둑(구덩이 경사면) 재질
 const markingMat=material(0xd8d6c9);
 const treeMat=material(0x3e5e3b); 
 const trunkMat=material(0x5c4938);
@@ -253,7 +254,7 @@ function addSceneryDetails(){
 }
 addSceneryDetails();
 
-// 다리 경사로(램프)를 반영하여 시작/끝 높이를 부드럽게 연결하는 도로 생성 함수
+// 다리 및 경사로를 위한 도로 생성 함수
 function roadQuadSloped(a, b, width, mat, yA, yB){
   const dx=b[0]-a[0], dz=b[1]-a[1], len=Math.hypot(dx,dz);
   if(len<.05)return;
@@ -351,7 +352,6 @@ function addBridgeRails(points,width,totalLen){
       const rail=new THREE.Mesh(new THREE.BoxGeometry(.18,.8,len),material(0x777b7e));
       rail.position.set((a[0]+b[0])/2+nx*offset, (yA+yB)/2 + 0.4, (a[1]+b[1])/2+nz*offset);
       rail.rotation.y=Math.atan2(dx,dz);
-      // 경사각 반영
       const slopeAngle = Math.atan2(yB - yA, len);
       rail.rotation.x = slopeAngle;
       scene.add(rail);
@@ -359,7 +359,6 @@ function addBridgeRails(points,width,totalLen){
   }
 }
 
-// 다리 높이 계산 함수 (시작/끝 15% 구간은 경사로, 중앙은 1.8m 평지)
 function getRoadHeightAtDist(dist, totalLen, isBridge){
   if(!isBridge || totalLen <= 0) return 0.035;
   const rampLen = Math.min(15, totalLen * 0.25);
@@ -371,9 +370,6 @@ function getRoadHeightAtDist(dist, totalLen, isBridge){
     return 1.8;
   }
 }
-
-// 전체 도로 세그먼트별 높이 데이터를 미리 계산하여 관리
-const bridgePaths = [];
 
 for(const r of DATA.roads){
   const pts=r.points;
@@ -399,7 +395,7 @@ for(const r of DATA.roads){
     roadQuadSloped(a, b, r.width, r.bridge?bridgeMat:roadMat, yA, yB);
 
     if(r.bridge){
-      bridgePaths.push({a: a, b: b, yA: yA, yB: yB, len: len});
+      // bridgePaths tracking if needed
     }
   }
   addRoadMarkings(pts, r.width, r.highway, r.bridge, totalLen);
@@ -421,10 +417,21 @@ for(const r of DATA.roads){
 
 for(const b of DATA.buildings) drawBuilding(b.points, b.height||10);
 
-// [수정] 파란 물을 바닥보다 자동차 높이만큼 밑에 있는 구덩이(-0.62m)로 가라앉혀 렌더링
+// [추가] 파란 바닥과 구덩이(강바닥 및 경사 둑 모형) 생성
 for(const w of DATA.water){
   for(let i=0;i<w.points.length-1;i++){
-    roadQuadSloped(w.points[i], w.points[i+1], 16, waterMat, -0.62, -0.62);
+    const a = w.points[i], b = w.points[i+1];
+    const dx = b[0]-a[0], dz = b[1]-a[1], len = Math.hypot(dx, dz);
+    if(len < 0.05) continue;
+    const nx = -dz/len, nz = dx/len;
+    
+    // 1. 파란 바닥 (물 수면, 높이 -0.62m 구덩이 밑바닥)
+    roadQuadSloped(a, b, 16, waterMat, -0.62, -0.62);
+    
+    // 2. 구덩이 둑(기슭 경사면): 지면(-0.15)에서 강바닥(-0.62)으로 부드럽게 내려가는 둑 모형
+    const bankWidth = 4.0;
+    roadQuadSloped([a[0]+nx*8, a[1]+nz*8], [b[0]+nx*8, b[1]+nz*8], bankWidth, riverBankMat, -0.15, -0.62);
+    roadQuadSloped([a[0]-nx*8, a[1]-nz*8], [b[0]-nx*8, b[1]-nz*8], bankWidth, riverBankMat, -0.15, -0.62);
   }
 }
 
@@ -482,9 +489,8 @@ function buildingCollision(x,z,yaw){
   return false;
 }
 
-// 차량 위치에 따른 현재 도로/다리 높이 계산 (경사로 연동)
 function getCarHeight(x, z){
-  let closestY = 0;
+  let closestY = 0.035;
   let minDist = 999;
   for(let r of DATA.roads){
     if(!r.bridge) continue;
@@ -594,7 +600,7 @@ function animate(now){
   
   if(!buildingCollision(nx,nz,yaw)){
     car.position.x=nx;car.position.z=nz;
-    car.position.y = getCarHeight(nx, nz); // 다리 경사로 높이에 맞춰 차량 높이 조절
+    car.position.y = getCarHeight(nx, nz);
     statusEl.textContent="주행 중";
   }else{
     velocity = -velocity * 0.35; 

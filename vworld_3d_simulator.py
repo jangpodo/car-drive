@@ -35,7 +35,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/20.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/21.0"},
         timeout=25
     )
     response.raise_for_status()
@@ -69,7 +69,7 @@ def get_osm(lat, lon, radius_m):
         try:
             response = requests.post(
                 endpoint, data=query,
-                headers={"User-Agent": "Student3DDrivingSimulator/20.0"},
+                headers={"User-Agent": "Student3DDrivingSimulator/21.0"},
                 timeout=110
             )
             response.raise_for_status()
@@ -239,7 +239,6 @@ buildingTexture.wrapT = THREE.RepeatWrapping;
 buildingTexture.repeat.set(1, 3);
 const buildingMat = new THREE.MeshLambertMaterial({ map: buildingTexture });
 
-// 특정 지점 (x, z)와 가장 가까운 물길 중심선까지의 거리 계산
 function getDistanceToWater(x, z){
   let minDist = 9999;
   for(let w of DATA.water){
@@ -256,18 +255,29 @@ function getDistanceToWater(x, z){
   return minDist;
 }
 
-// [핵심 1] 적응형 타일 분할 (강으로 갈수록 50m -> 25m -> 12.5m -> 6.25m -> 3.125m로 초록 타일이 미세해짐)
+// [핵심 피드백 반영 1] 강/물길 구역으로부터 '100m 전'부터 오브젝트를 작게 나눔
 function addAdaptiveGroundTile(cx, cz, size){
   const dist = getDistanceToWater(cx, cz);
-  const riverBoundary = 8.0; // 강 물길 반지름
+  const riverBoundary = 6.0; // 강 수면+둑 경계범위
 
-  // 강 내부(수역 범위 안)이면 바닥을 생성하지 않고 구멍을 냄
+  // 강 수역 안쪽이면 땅 타일 안 만듦
   if(dist < riverBoundary){
     return;
   }
 
-  // 강 경계선근처(거리 25m 이내)인데 타일 크기가 크면 4개의 더 작은 서브 타일로 분할 쪼개기
-  if(dist < riverBoundary + 20.0 && size > 3.125){
+  // 물길 100m 전부터 오브젝트를 점진적으로 작게 분할 (50m -> 25m -> 12.5m -> 6.25m -> 2.5m -> 1.0m)
+  let maxAllowedSize = 50.0;
+  if(dist < 15.0){
+    maxAllowedSize = 1.25;
+  } else if(dist < 30.0){
+    maxAllowedSize = 2.5;
+  } else if(dist < 60.0){
+    maxAllowedSize = 6.25;
+  } else if(dist < 100.0){ // [100m 전부터 세분화 시작]
+    maxAllowedSize = 12.5;
+  }
+
+  if(size > maxAllowedSize){
     const half = size / 2;
     const quarter = size / 4;
     addAdaptiveGroundTile(cx - quarter, cz - quarter, half);
@@ -277,7 +287,6 @@ function addAdaptiveGroundTile(cx, cz, size){
     return;
   }
 
-  // 최종 잘라진 초록색 땅 타일 생성
   const tile = new THREE.Mesh(new THREE.PlaneGeometry(size, size), groundMat);
   tile.rotation.x = -Math.PI/2;
   tile.position.set(cx, -0.01, cz);
@@ -299,7 +308,7 @@ function addSceneryDetails(){
   for(let i=0; i<180; i++){
     let rx = (Math.random() - 0.5) * 1200;
     let rz = (Math.random() - 0.5) * 1200;
-    if(getDistanceToWater(rx, rz) > 12.0){
+    if(getDistanceToWater(rx, rz) > 10.0){
       const grass = new THREE.Mesh(new THREE.DodecahedronGeometry(0.8), grassMat);
       grass.position.set(rx, 0, rz);
       scene.add(grass);
@@ -458,8 +467,8 @@ for(const r of DATA.roads){
       const nx=-dz/len,nz=dx/len;
       for(let t=25;t<len;t+=70){
         const x=a[0]+dx*t/len,z=a[1]+dz*t/len,off=r.width/2+5.0;
-        if(getDistanceToWater(x+nx*off, z+nz*off) > 10) addTree(x+nx*off, z+nz*off);
-        if(getDistanceToWater(x-nx*off, z-nz*off) > 10) addTree(x-nx*off, z-nz*off);
+        if(getDistanceToWater(x+nx*off, z+nz*off) > 8) addTree(x+nx*off, z+nz*off);
+        if(getDistanceToWater(x-nx*off, z-nz*off) > 8) addTree(x-nx*off, z-nz*off);
       }
     }
   }
@@ -467,7 +476,7 @@ for(const r of DATA.roads){
 
 for(const b of DATA.buildings) drawBuilding(b.points, b.height||10);
 
-// [핵심 2] 파란 물 오브젝트: 차량 크기(4.5m x 2m)의 세분화 블록으로 촘촘히 엮어 강 밖으로 나가지 않게 조절
+// [핵심 피드백 반영 2] 파란 물 오브젝트의 최대 크기를 승용차 바닥 면적(길이 4.0m x 너비 1.8m) 이하로 잘게 분할
 for(const w of DATA.water){
   for(let i=0;i<w.points.length-1;i++){
     const a = w.points[i], b = w.points[i+1];
@@ -475,23 +484,35 @@ for(const w of DATA.water){
     if(len < 0.05) continue;
     const nx = -dz/len, nz = dx/len;
     
-    const riverWidth = 7.0; // 강 너비 (정밀 조절)
-    const bankWidth = 3.5;  // 둑 너비
+    const riverWidth = 5.0; // 강 폭
+    const bankWidth = 2.5;  // 둑 폭
 
-    // 강 길이를 차량 크기(약 4.5m) 단위 세그먼트로 잘게 나눔
-    const segStep = 4.5;
-    for(let s = 0; s < len; s += segStep){
-      const sEnd = Math.min(s + segStep, len);
+    // 자동차 길이(최대 4.0m) 단위로 축소 분할
+    const maxBlockLength = 4.0;
+    const maxBlockWidth = 1.8;
+
+    for(let s = 0; s < len; s += maxBlockLength){
+      const sEnd = Math.min(s + maxBlockLength, len);
       const segA = [a[0] + (dx/len)*s, a[1] + (dz/len)*s];
       const segB = [a[0] + (dx/len)*sEnd, a[1] + (dz/len)*sEnd];
+
+      // 강 너비 방향도 차 바닥 크기(1.8m 이하)로 쪼개서 생성
+      const innerWaterWidth = riverWidth - 0.2;
+      const widthStrips = Math.ceil(innerWaterWidth / maxBlockWidth);
+      const stripWidth = innerWaterWidth / widthStrips;
 
       // 1. 강바닥 흙 블록 (y = -0.8m)
       roadQuadSloped(segA, segB, riverWidth, riverBedMat, -0.8, -0.8);
       
-      // 2. 승용차 크기의 파란색 강물 수면 블록 (y = -0.35m)
-      roadQuadSloped(segA, segB, riverWidth - 0.2, waterMat, -0.35, -0.35);
+      // 2. 파란색 물 수면 블록 (최대 차 바닥 면적 4m x 1.8m 이하)
+      for(let wIdx = 0; wIdx < widthStrips; wIdx++){
+        const offset = -innerWaterWidth/2 + stripWidth * (wIdx + 0.5);
+        const subA = [segA[0] + nx * offset, segA[1] + nz * offset];
+        const subB = [segB[0] + nx * offset, segB[1] + nz * offset];
+        roadQuadSloped(subA, subB, stripWidth, waterMat, -0.35, -0.35);
+      }
 
-      // 3. 둑 경사면 세분화 블록 (가장자리 밀착)
+      // 3. 강둑 경사면 쪼개기
       const oa1 = [segA[0] + nx * (riverWidth/2 + bankWidth), segA[1] + nz * (riverWidth/2 + bankWidth)];
       const ob1 = [segB[0] + nx * (riverWidth/2 + bankWidth), segB[1] + nz * (riverWidth/2 + bankWidth)];
       const ia1 = [segA[0] + nx * (riverWidth/2), segA[1] + nz * (riverWidth/2)];
@@ -596,10 +617,10 @@ function getCarHeight(x, z){
     for(let i=0; i<pts.length-1; i++){
       let a = pts[i], b = pts[i+1];
       let d = distToSeg(x, z, a, b);
-      if(d < 3.5){
+      if(d < 2.5){
         return -0.8;
-      } else if(d < 7.0){
-        let ratio = (d - 3.5) / 3.5;
+      } else if(d < 5.0){
+        let ratio = (d - 2.5) / 2.5;
         return -0.8 + ratio * 0.8;
       }
     }

@@ -457,10 +457,11 @@ function animate(now){
   else if(backward)velocity=Math.max(-5,velocity-7.5*dt);
   else velocity*=Math.pow(.985,dt*60);
 
-  // [수정됨] A와 D 조향 방향 반전 적용 ((left?1:0)-(right?1:0))
   const steerInput=(left?1:0)-(right?1:0);
   steer=THREE.MathUtils.damp(steer,steerInput,4.5,dt);
-  const steerAngle=steer*.48;
+  
+  // [수정됨] 회전 감도를 부드럽게 줄이기 위해 계수를 0.48에서 0.22로 낮춤
+  const steerAngle=steer*.22;
   const wheelbase=2.7;
   if(Math.abs(velocity)>.05)yaw+=velocity/wheelbase*Math.tan(steerAngle)*dt;
   car.rotation.y=yaw;
@@ -468,11 +469,17 @@ function animate(now){
 
   const nx=car.position.x+Math.sin(yaw)*velocity*dt;
   const nz=car.position.z+Math.cos(yaw)*velocity*dt;
+  
   if(!buildingCollision(nx,nz,yaw)){
     car.position.x=nx;car.position.z=nz;
     statusEl.textContent="주행 중";
   }else{
-    velocity=0;statusEl.textContent="건물과 충돌 — 차체가 더 이상 들어가지 않습니다";
+    // [수정됨] 건물 충돌 시 속도가 0이 되는 대신 반대 방향으로 튕겨 나감 (Rebound)
+    velocity = -velocity * 0.35; 
+    // 차체가 건물 안으로 파고드는 것을 방지하기 위해 약간 뒤로 밀어냄
+    car.position.x -= Math.sin(yaw) * Math.abs(velocity) * dt * 2.5;
+    car.position.z -= Math.cos(yaw) * Math.abs(velocity) * dt * 2.5;
+    statusEl.textContent="💥 쾅! 건물에 부딪혀 뒤로 튕겨 나갑니다!";
   }
   speedEl.textContent=Math.round(Math.abs(velocity)*3.6);
 

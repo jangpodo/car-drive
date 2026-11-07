@@ -36,7 +36,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/16.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/17.0"},
         timeout=25
     )
     response.raise_for_status()
@@ -70,7 +70,7 @@ def get_osm(lat, lon, radius_m):
         try:
             response = requests.post(
                 endpoint, data=query,
-                headers={"User-Agent": "Student3DDrivingSimulator/16.0"},
+                headers={"User-Agent": "Student3DDrivingSimulator/17.0"},
                 timeout=110
             )
             response.raise_for_status()
@@ -226,7 +226,8 @@ const groundMat=material(0x7fa27f);
 const roadMat=material(0x343638);
 const bridgeMat=material(0x42464a);
 const waterMat=material(0x527f9b);
-const riverBankMat=material(0x5a6e55); // 강둑(구덩이 경사면) 재질
+const riverBedMat=material(0x5c4c36); // 강바닥 흙 색상
+const riverBankMat=material(0x5a7a55); // 강둑 경사면 재질
 const markingMat=material(0xd8d6c9);
 const treeMat=material(0x3e5e3b); 
 const trunkMat=material(0x5c4938);
@@ -240,7 +241,7 @@ buildingTexture.repeat.set(1, 3);
 const buildingMat = new THREE.MeshLambertMaterial({ map: buildingTexture });
 
 const ground=new THREE.Mesh(new THREE.PlaneGeometry(20000,20000),groundMat);
-ground.rotation.x=-Math.PI/2;ground.position.y=-.15;scene.add(ground);
+ground.rotation.x=-Math.PI/2;ground.position.y=-0.15;scene.add(ground);
 
 // 초록 바닥 풀 장식 배치
 function addSceneryDetails(){
@@ -254,7 +255,6 @@ function addSceneryDetails(){
 }
 addSceneryDetails();
 
-// 다리 및 경사로를 위한 도로 생성 함수
 function roadQuadSloped(a, b, width, mat, yA, yB){
   const dx=b[0]-a[0], dz=b[1]-a[1], len=Math.hypot(dx,dz);
   if(len<.05)return;
@@ -266,6 +266,18 @@ function roadQuadSloped(a, b, width, mat, yA, yB){
   const vertices=new Float32Array([
     p1[0], yA, p1[1],  p2[0], yA, p2[1],  p3[0], yB, p3[1],
     p1[0], yA, p1[1],  p3[0], yB, p3[1],  p4[0], yB, p4[1]
+  ]);
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute("position",new THREE.BufferAttribute(vertices,3));
+  geo.computeVertexNormals();
+  scene.add(new THREE.Mesh(geo,mat));
+}
+
+// 경사면(강둑)을 만들기 위한 쿼드 생성 함수
+function bankQuad(a1, b1, a2, b2, y1, y2, mat){
+  const vertices=new Float32Array([
+    a1[0], y1, a1[1],  a2[0], y2, a2[1],  b2[0], y2, b2[1],
+    a1[0], y1, a1[1],  b2[0], y2, b2[1],  b1[0], y1, b1[1]
   ]);
   const geo=new THREE.BufferGeometry();
   geo.setAttribute("position",new THREE.BufferAttribute(vertices,3));
@@ -327,7 +339,6 @@ function drawBuilding(points,height){
   scene.add(mesh);
 }
 
-// 자동차보다 큰 대형 나무
 function addTree(x,z){
   const scale = 2.2;
   const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.3*scale,.4*scale,2.5*scale,6),trunkMat);
@@ -393,10 +404,6 @@ for(const r of DATA.roads){
     const yB = getRoadHeightAtDist(dEnd, totalLen, r.bridge);
 
     roadQuadSloped(a, b, r.width, r.bridge?bridgeMat:roadMat, yA, yB);
-
-    if(r.bridge){
-      // bridgePaths tracking if needed
-    }
   }
   addRoadMarkings(pts, r.width, r.highway, r.bridge, totalLen);
   if(r.bridge) addBridgeRails(pts, r.width, totalLen);
@@ -417,7 +424,7 @@ for(const r of DATA.roads){
 
 for(const b of DATA.buildings) drawBuilding(b.points, b.height||10);
 
-// [추가] 파란 바닥과 구덩이(강바닥 및 경사 둑 모형) 생성
+// [수정] 땅을 파서 만든 리얼한 강 구덩이 (강바닥 + 양옆 경사 둑 + 물 수면)
 for(const w of DATA.water){
   for(let i=0;i<w.points.length-1;i++){
     const a = w.points[i], b = w.points[i+1];
@@ -425,13 +432,28 @@ for(const w of DATA.water){
     if(len < 0.05) continue;
     const nx = -dz/len, nz = dx/len;
     
-    // 1. 파란 바닥 (물 수면, 높이 -0.62m 구덩이 밑바닥)
-    roadQuadSloped(a, b, 16, waterMat, -0.62, -0.62);
+    const riverWidth = 12.0;
+    const bankWidth = 6.0;
+
+    // 1. 강바닥 (y = -0.60)
+    roadQuadSloped(a, b, riverWidth, riverBedMat, -0.60, -0.60);
     
-    // 2. 구덩이 둑(기슭 경사면): 지면(-0.15)에서 강바닥(-0.62)으로 부드럽게 내려가는 둑 모형
-    const bankWidth = 4.0;
-    roadQuadSloped([a[0]+nx*8, a[1]+nz*8], [b[0]+nx*8, b[1]+nz*8], bankWidth, riverBankMat, -0.15, -0.62);
-    roadQuadSloped([a[0]-nx*8, a[1]-nz*8], [b[0]-nx*8, b[1]-nz*8], bankWidth, riverBankMat, -0.15, -0.62);
+    // 2. 물 수면 (y = -0.52)
+    roadQuadSloped(a, b, riverWidth - 0.4, waterMat, -0.52, -0.52);
+
+    // 3. 왼쪽 경사 둑 (지면 y=0.0 에서 강바닥 y=-0.60 으로 파여 내려감)
+    const oa1 = [a[0] + nx * (riverWidth/2 + bankWidth), a[1] + nz * (riverWidth/2 + bankWidth)];
+    const ob1 = [b[0] + nx * (riverWidth/2 + bankWidth), b[1] + nz * (riverWidth/2 + bankWidth)];
+    const ia1 = [a[0] + nx * (riverWidth/2), a[1] + nz * (riverWidth/2)];
+    const ib1 = [b[0] + nx * (riverWidth/2), b[1] + nz * (riverWidth/2)];
+    bankQuad(oa1, ob1, ia1, ib1, 0.0, -0.60, riverBankMat);
+
+    // 4. 오른쪽 경사 둑
+    const oa2 = [a[0] - nx * (riverWidth/2 + bankWidth), a[1] - nz * (riverWidth/2 + bankWidth)];
+    const ob2 = [b[0] - nx * (riverWidth/2 + bankWidth), b[1] - nz * (riverWidth/2 + bankWidth)];
+    const ia2 = [a[0] - nx * (riverWidth/2), a[1] - nz * (riverWidth/2)];
+    const ib2 = [b[0] - nx * (riverWidth/2), b[1] - nz * (riverWidth/2)];
+    bankQuad(oa2, ob2, ia2, ib2, 0.0, -0.60, riverBankMat);
   }
 }
 

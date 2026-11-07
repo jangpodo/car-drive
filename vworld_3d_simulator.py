@@ -35,7 +35,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/21.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/22.0"},
         timeout=25
     )
     response.raise_for_status()
@@ -69,7 +69,7 @@ def get_osm(lat, lon, radius_m):
         try:
             response = requests.post(
                 endpoint, data=query,
-                headers={"User-Agent": "Student3DDrivingSimulator/21.0"},
+                headers={"User-Agent": "Student3DDrivingSimulator/22.0"},
                 timeout=110
             )
             response.raise_for_status()
@@ -225,8 +225,6 @@ const groundMat=material(0x7fa27f);
 const roadMat=material(0x343638);
 const bridgeMat=material(0x42464a);
 const waterMat=material(0x3a75c4); 
-const riverBedMat=material(0x4a3b2c); 
-const riverBankMat=material(0x5a7a55); 
 const markingMat=material(0xd8d6c9);
 const treeMat=material(0x3e5e3b); 
 const trunkMat=material(0x5c4938);
@@ -239,80 +237,19 @@ buildingTexture.wrapT = THREE.RepeatWrapping;
 buildingTexture.repeat.set(1, 3);
 const buildingMat = new THREE.MeshLambertMaterial({ map: buildingTexture });
 
-function getDistanceToWater(x, z){
-  let minDist = 9999;
-  for(let w of DATA.water){
-    let pts = w.points;
-    for(let i=0; i<pts.length-1; i++){
-      let a = pts[i], b = pts[i+1];
-      let vx = b[0]-a[0], vz = b[1]-a[1], l2 = vx*vx + vz*vz;
-      let t = l2 ? Math.max(0, Math.min(1, ((x-a[0])*vx + (z-a[1])*vz)/l2)) : 0;
-      let cx = a[0] + t*vx, cz = a[1] + t*vz;
-      let d = Math.hypot(x-cx, z-cz);
-      if(d < minDist) minDist = d;
-    }
-  }
-  return minDist;
-}
-
-// [핵심 피드백 반영 1] 강/물길 구역으로부터 '100m 전'부터 오브젝트를 작게 나눔
-function addAdaptiveGroundTile(cx, cz, size){
-  const dist = getDistanceToWater(cx, cz);
-  const riverBoundary = 6.0; // 강 수면+둑 경계범위
-
-  // 강 수역 안쪽이면 땅 타일 안 만듦
-  if(dist < riverBoundary){
-    return;
-  }
-
-  // 물길 100m 전부터 오브젝트를 점진적으로 작게 분할 (50m -> 25m -> 12.5m -> 6.25m -> 2.5m -> 1.0m)
-  let maxAllowedSize = 50.0;
-  if(dist < 15.0){
-    maxAllowedSize = 1.25;
-  } else if(dist < 30.0){
-    maxAllowedSize = 2.5;
-  } else if(dist < 60.0){
-    maxAllowedSize = 6.25;
-  } else if(dist < 100.0){ // [100m 전부터 세분화 시작]
-    maxAllowedSize = 12.5;
-  }
-
-  if(size > maxAllowedSize){
-    const half = size / 2;
-    const quarter = size / 4;
-    addAdaptiveGroundTile(cx - quarter, cz - quarter, half);
-    addAdaptiveGroundTile(cx + quarter, cz - quarter, half);
-    addAdaptiveGroundTile(cx - quarter, cz + quarter, half);
-    addAdaptiveGroundTile(cx + quarter, cz + quarter, half);
-    return;
-  }
-
-  const tile = new THREE.Mesh(new THREE.PlaneGeometry(size, size), groundMat);
-  tile.rotation.x = -Math.PI/2;
-  tile.position.set(cx, -0.01, cz);
-  scene.add(tile);
-}
-
-function createAdaptiveGround(){
-  const baseSize = 50; 
-  const range = 1000;
-  for(let x = -range; x < range; x += baseSize){
-    for(let z = -range; z < range; z += baseSize){
-      addAdaptiveGroundTile(x + baseSize/2, z + baseSize/2, baseSize);
-    }
-  }
-}
-createAdaptiveGround();
+// 1. 단일 평면 초록 바닥 생성 (렉 없이 부드러움)
+const ground=new THREE.Mesh(new THREE.PlaneGeometry(20000,20000),groundMat);
+ground.rotation.x=-Math.PI/2;
+ground.position.y=-0.15;
+scene.add(ground);
 
 function addSceneryDetails(){
-  for(let i=0; i<180; i++){
+  for(let i=0; i<150; i++){
     let rx = (Math.random() - 0.5) * 1200;
     let rz = (Math.random() - 0.5) * 1200;
-    if(getDistanceToWater(rx, rz) > 10.0){
-      const grass = new THREE.Mesh(new THREE.DodecahedronGeometry(0.8), grassMat);
-      grass.position.set(rx, 0, rz);
-      scene.add(grass);
-    }
+    const grass = new THREE.Mesh(new THREE.DodecahedronGeometry(0.8), grassMat);
+    grass.position.set(rx, 0, rz);
+    scene.add(grass);
   }
 }
 addSceneryDetails();
@@ -328,17 +265,6 @@ function roadQuadSloped(a, b, width, mat, yA, yB){
   const vertices=new Float32Array([
     p1[0], yA, p1[1],  p2[0], yA, p2[1],  p3[0], yB, p3[1],
     p1[0], yA, p1[1],  p3[0], yB, p3[1],  p4[0], yB, p4[1]
-  ]);
-  const geo=new THREE.BufferGeometry();
-  geo.setAttribute("position",new THREE.BufferAttribute(vertices,3));
-  geo.computeVertexNormals();
-  scene.add(new THREE.Mesh(geo,mat));
-}
-
-function bankQuad(a1, b1, a2, b2, y1, y2, mat){
-  const vertices=new Float32Array([
-    a1[0], y1, a1[1],  a2[0], y2, a2[1],  b2[0], y2, b2[1],
-    a1[0], y1, a1[1],  b2[0], y2, b2[1],  b1[0], y1, b1[1]
   ]);
   const geo=new THREE.BufferGeometry();
   geo.setAttribute("position",new THREE.BufferAttribute(vertices,3));
@@ -467,8 +393,8 @@ for(const r of DATA.roads){
       const nx=-dz/len,nz=dx/len;
       for(let t=25;t<len;t+=70){
         const x=a[0]+dx*t/len,z=a[1]+dz*t/len,off=r.width/2+5.0;
-        if(getDistanceToWater(x+nx*off, z+nz*off) > 8) addTree(x+nx*off, z+nz*off);
-        if(getDistanceToWater(x-nx*off, z-nz*off) > 8) addTree(x-nx*off, z-nz*off);
+        addTree(x+nx*off, z+nz*off);
+        addTree(x-nx*off, z-nz*off);
       }
     }
   }
@@ -476,55 +402,10 @@ for(const r of DATA.roads){
 
 for(const b of DATA.buildings) drawBuilding(b.points, b.height||10);
 
-// [핵심 피드백 반영 2] 파란 물 오브젝트의 최대 크기를 승용차 바닥 면적(길이 4.0m x 너비 1.8m) 이하로 잘게 분할
+// 2. 파란색 강물 표시 (지면 위에 깔끔하게 렌더링)
 for(const w of DATA.water){
   for(let i=0;i<w.points.length-1;i++){
-    const a = w.points[i], b = w.points[i+1];
-    const dx = b[0]-a[0], dz = b[1]-a[1], len = Math.hypot(dx, dz);
-    if(len < 0.05) continue;
-    const nx = -dz/len, nz = dx/len;
-    
-    const riverWidth = 5.0; // 강 폭
-    const bankWidth = 2.5;  // 둑 폭
-
-    // 자동차 길이(최대 4.0m) 단위로 축소 분할
-    const maxBlockLength = 4.0;
-    const maxBlockWidth = 1.8;
-
-    for(let s = 0; s < len; s += maxBlockLength){
-      const sEnd = Math.min(s + maxBlockLength, len);
-      const segA = [a[0] + (dx/len)*s, a[1] + (dz/len)*s];
-      const segB = [a[0] + (dx/len)*sEnd, a[1] + (dz/len)*sEnd];
-
-      // 강 너비 방향도 차 바닥 크기(1.8m 이하)로 쪼개서 생성
-      const innerWaterWidth = riverWidth - 0.2;
-      const widthStrips = Math.ceil(innerWaterWidth / maxBlockWidth);
-      const stripWidth = innerWaterWidth / widthStrips;
-
-      // 1. 강바닥 흙 블록 (y = -0.8m)
-      roadQuadSloped(segA, segB, riverWidth, riverBedMat, -0.8, -0.8);
-      
-      // 2. 파란색 물 수면 블록 (최대 차 바닥 면적 4m x 1.8m 이하)
-      for(let wIdx = 0; wIdx < widthStrips; wIdx++){
-        const offset = -innerWaterWidth/2 + stripWidth * (wIdx + 0.5);
-        const subA = [segA[0] + nx * offset, segA[1] + nz * offset];
-        const subB = [segB[0] + nx * offset, segB[1] + nz * offset];
-        roadQuadSloped(subA, subB, stripWidth, waterMat, -0.35, -0.35);
-      }
-
-      // 3. 강둑 경사면 쪼개기
-      const oa1 = [segA[0] + nx * (riverWidth/2 + bankWidth), segA[1] + nz * (riverWidth/2 + bankWidth)];
-      const ob1 = [segB[0] + nx * (riverWidth/2 + bankWidth), segB[1] + nz * (riverWidth/2 + bankWidth)];
-      const ia1 = [segA[0] + nx * (riverWidth/2), segA[1] + nz * (riverWidth/2)];
-      const ib1 = [segB[0] + nx * (riverWidth/2), segB[1] + nz * (riverWidth/2)];
-      bankQuad(oa1, ob1, ia1, ib1, 0.0, -0.8, riverBankMat);
-
-      const oa2 = [segA[0] - nx * (riverWidth/2 + bankWidth), segA[1] - nz * (riverWidth/2 + bankWidth)];
-      const ob2 = [segB[0] - nx * (riverWidth/2 + bankWidth), segB[1] - nz * (riverWidth/2 + bankWidth)];
-      const ia2 = [segA[0] - nx * (riverWidth/2), segA[1] - nz * (riverWidth/2)];
-      const ib2 = [segB[0] - nx * (riverWidth/2), segB[1] - nz * (riverWidth/2)];
-      bankQuad(oa2, ob2, ia2, ib2, 0.0, -0.8, riverBankMat);
-    }
+    roadQuadSloped(w.points[i], w.points[i+1], 12, waterMat, 0.02, 0.02);
   }
 }
 
@@ -611,21 +492,6 @@ function getCarHeight(x, z){
     }
   }
   if(minBridgeDist < 12 && bridgeY !== null) return bridgeY;
-
-  for(let w of DATA.water){
-    let pts = w.points;
-    for(let i=0; i<pts.length-1; i++){
-      let a = pts[i], b = pts[i+1];
-      let d = distToSeg(x, z, a, b);
-      if(d < 2.5){
-        return -0.8;
-      } else if(d < 5.0){
-        let ratio = (d - 2.5) / 2.5;
-        return -0.8 + ratio * 0.8;
-      }
-    }
-  }
-
   return 0.035;
 }
 

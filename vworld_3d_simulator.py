@@ -3,7 +3,6 @@ import streamlit.components.v1 as components
 import requests
 import math
 import json
-import re
 
 st.set_page_config(page_title="3D 도시 운전 시뮬레이터", layout="wide")
 st.title("🚗 3D 도시 운전 시뮬레이터")
@@ -36,7 +35,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/24.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/25.0"},
         timeout=25
     )
     response.raise_for_status()
@@ -57,6 +56,10 @@ def get_osm(lat, lon, radius_m):
     (
       way["highway"~"motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link"]({south},{west},{north},{east});
       way["building"]({south},{west},{north},{east});
+      way["amenity"]({south},{west},{north},{east});
+      way["shop"]({south},{west},{north},{east});
+      way["tourism"]({south},{west},{north},{east});
+      way["leisure"]({south},{west},{north},{east});
       way["waterway"~"river|canal"]({south},{west},{north},{east});
       way["natural"="water"]({south},{west},{north},{east});
     );
@@ -70,7 +73,7 @@ def get_osm(lat, lon, radius_m):
         try:
             response = requests.post(
                 endpoint, data=query,
-                headers={"User-Agent": "Student3DDrivingSimulator/24.0"},
+                headers={"User-Agent": "Student3DDrivingSimulator/25.0"},
                 timeout=110
             )
             response.raise_for_status()
@@ -106,22 +109,40 @@ def road_width_m(tags):
     }
     return widths.get(highway, 6.0)
 
-# 아파트, 동 번호, 교회, 단순 숫자, 빌딩 이름을 제외하는 필터 함수
-def is_valid_landmark_name(name):
-    if not name:
-        return False
-    name_str = name.strip()
-    if name_str.isdigit():
-        return False
-    if "아파트" in name_str:
-        return False
-    if "교회" in name_str:
-        return False
-    if "빌딩" in name_str:
-        return False
-    if re.search(r'\d+동', name_str):
-        return False
-    return True
+# 사용자가 지정한 카테고리(음식점, 쇼핑몰, 백화점, 박물관, 카페, 편의점, 시장, 시청, 법원, 공원, 도서관 등)만 필터링
+def get_filtered_landmark_name(tags):
+    name = tags.get("name", "").strip()
+    if not name or name.isdigit():
+        return None
+
+    # 제외 대상 (아파트, 동 번호, 교회, 단순 빌딩 등)
+    if "아파트" in name or "교회" in name or "빌딩" in name or "동" in name:
+        if not ("백화점" in name or "쇼핑몰" in name or "시청" in name):
+            return None
+
+    amenity = tags.get("amenity", "")
+    shop = tags.get("shop", "")
+    tourism = tags.get("tourism", "")
+    leisure = tags.get("leisure", "")
+    building = tags.get("building", "")
+
+    # 유용한 시설 태그 매칭 확인
+    valid_amenities = ["restaurant", "cafe", "library", "courthouse", "town_hall", "marketplace", "convenience", "supermarket"]
+    valid_shops = ["mall", "department_store", "supermarket", "convenience", "variety_store"]
+    valid_tourism = ["museum", "attraction", "gallery"]
+    valid_leisure = ["park", "garden"]
+    valid_buildings = ["civic", "public", "commercial", "retail", "museum"]
+
+    is_target = (
+        amenity in valid_amenities or
+        shop in valid_shops or
+        tourism in valid_tourism or
+        leisure in valid_leisure or
+        building in valid_buildings or
+        any(keyword in name for keyword in ["음식점", "식당", "카페", "쇼핑몰", "백화점", "박물관", "편의점", "시장", "시청", "법원", "공원", "도서관"])
+    )
+
+    return name if is_target else None
 
 def convert_osm(osm, center_lat, center_lon):
     result = {"roads": [], "buildings": [], "water": []}
@@ -153,7 +174,7 @@ def convert_osm(osm, center_lat, center_lon):
                 "lanes": tags.get("lanes", "")
             })
 
-        elif "building" in tags and len(points) >= 3:
+        elif ("building" in tags or "amenity" in tags or "shop" in tags or "tourism" in tags or "leisure" in tags) and len(points) >= 3:
             try:
                 height = float(str(tags.get("height", "")).replace("m", "").strip())
             except (ValueError, TypeError):
@@ -166,13 +187,12 @@ def convert_osm(osm, center_lat, center_lon):
             cx = sum(p[0] for p in points) / len(points)
             cz = sum(p[1] for p in points) / len(points)
             
-            raw_name = tags.get("name", "")
-            building_name = raw_name if is_valid_landmark_name(raw_name) else ""
+            landmark_name = get_filtered_landmark_name(tags)
 
             result["buildings"].append({
                 "points": points,
                 "height": min(max(height, 3.0), 180.0),
-                "name": building_name,
+                "name": landmark_name if landmark_name else "",
                 "cx": cx,
                 "cz": cz
             })
@@ -217,7 +237,6 @@ button{font-size:18px;padding:12px 16px;background:#26313b;color:white;border:0;
 #camBtn{position:absolute;right:12px;bottom:12px;z-index:10;font-size:13px;padding:10px}
 #game canvas{display:block;touch-action:none}
 
-/* 랜드마크 빨간 핀 마커 스타일 */
 #markers-container {
   position: absolute;
   top: 0; left: 0; width: 100%; height: 100%;
@@ -492,7 +511,7 @@ for(const b of DATA.buildings) {
       <div class="pin-label">${b.name}</div>
     `;
     el.onclick = () => {
-      alert(`📍 장소 안내: ${b.name}\n(실제 현실의 해당 랜드마크 위치입니다.)`);
+      alert(`📍 주요 시설 안내: ${b.name}`);
     };
     markersContainer.appendChild(el);
     landmarkMarkers.push({

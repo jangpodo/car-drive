@@ -5,11 +5,23 @@ import math
 import json
 
 st.set_page_config(page_title="3D 도시 운전 시뮬레이터", layout="wide")
-st.title("🚗 3D 도시 운전 시뮬레이터 (자연 배경 추가)")
-st.caption("실제 지도 도로·건물 데이터를 바탕으로 산, 대형 나무, 풀밭 등 자연 배경이 어우러진 시뮬레이터입니다.")
+st.title("🚗 3D 도시 운전 시뮬레이터")
+st.caption("실제 지도 도로·건물 데이터를 바탕으로 구현된 3D 운전 시뮬레이터입니다.")
 
 with st.sidebar:
     place = st.text_input("도시 / 주소 입력", "서울특별시 강남구")
+    
+    # [추가] 지역별 유명 도시 예시 안내
+    st.markdown("---")
+    st.markdown("📌 **추천 도시 입력 예시**")
+    st.markdown("- **특별시/광역시:** 서울 강남구, 부산 해운대구")
+    st.markdown("- **경기도:** 수원시 팔달구, 성남시 분당구")
+    st.markdown("- **강원도:** 강릉시 중앙동, 춘천시")
+    st.markdown("- **충청도:** 천안시 서북구, 청주시 흥덕구")
+    st.markdown("- **전라도:** 전주시 완산구, 여수시")
+    st.markdown("- **경상도:** 경주시, 포항시 북구")
+    st.markdown("---")
+
     radius = st.select_slider(
         "지도 범위 반경",
         options=[400, 600, 800, 1000, 1500],
@@ -24,7 +36,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/13.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/14.0"},
         timeout=25
     )
     response.raise_for_status()
@@ -47,8 +59,6 @@ def get_osm(lat, lon, radius_m):
       way["building"]({south},{west},{north},{east});
       way["waterway"~"river|canal"]({south},{west},{north},{east});
       way["natural"="water"]({south},{west},{north},{east});
-      way["natural"="peak"]({south},{west},{north},{east});
-      way["place"="mountain_range"]({south},{west},{north},{east});
     );
     out body geom;
     """
@@ -60,7 +70,7 @@ def get_osm(lat, lon, radius_m):
         try:
             response = requests.post(
                 endpoint, data=query,
-                headers={"User-Agent": "Student3DDrivingSimulator/13.0"},
+                headers={"User-Agent": "Student3DDrivingSimulator/14.0"},
                 timeout=110
             )
             response.raise_for_status()
@@ -97,26 +107,13 @@ def road_width_m(tags):
     return widths.get(highway, 6.0)
 
 def convert_osm(osm, center_lat, center_lon):
-    result = {"roads": [], "buildings": [], "water": [], "mountains": []}
+    result = {"roads": [], "buildings": [], "water": []}
     meters_lon = 111320 * math.cos(math.radians(center_lat))
     meters_lat = 111320
 
     for element in osm.get("elements", []):
         tags = element.get("tags", {})
         geometry = element.get("geometry", [])
-        
-        # 자연산(Peak) 데이터가 있는 경우 수집
-        if tags.get("natural") == "peak" or "ele" in tags:
-            lat = element.get("lat", center_lat)
-            lon = element.get("lon", center_lon)
-            mx = (float(lon) - center_lon) * meters_lon
-            mz = -(float(lat) - center_lat) * meters_lat
-            try:
-                ele = float(tags.get("ele", "150"))
-            except:
-                ele = 150.0
-            result["mountains"].append({"x": mx, "z": mz, "height": max(80.0, ele * 0.5)})
-
         if len(geometry) < 2:
             continue
 
@@ -157,14 +154,6 @@ def convert_osm(osm, center_lat, center_lon):
         elif "waterway" in tags or "natural" in tags:
             result["water"].append({"points": points, "name": tags.get("name", "물길")})
 
-    # 만약 OSM 데이터에 산 봉우리 정보가 적다면 주변에 기본 산 풍경을 몇 개 배치
-    if len(result["mountains"]) == 0:
-        result["mountains"] = [
-            {"x": 400, "z": -500, "height": 160},
-            {"x": -500, "z": 600, "height": 200},
-            {"x": 600, "z": 500, "height": 180}
-        ]
-
     return result
 
 if "city_data" not in st.session_state:
@@ -174,7 +163,7 @@ if "city_label" not in st.session_state:
 
 if load:
     try:
-        with st.spinner("실제 도로와 자연 배경 데이터를 가져오는 중입니다..."):
+        with st.spinner("실제 도로와 건물 데이터를 가져오는 중입니다..."):
             lat, lon, label = geocode(place.strip())
             raw = get_osm(lat, lon, radius)
             st.session_state.city_data = convert_osm(raw, lat, lon)
@@ -185,7 +174,7 @@ if load:
 if st.session_state.city_data:
     data = st.session_state.city_data
     st.success(f"📍 {st.session_state.city_label}")
-    st.caption(f"도로 {len(data['roads'])}개 · 건물 {len(data['buildings'])}개 · 산 배경 {len(data['mountains'])}개")
+    st.caption(f"도로 {len(data['roads'])}개 · 건물 {len(data['buildings'])}개 · 물길 {len(data['water'])}개")
     st.info("W/S 또는 ↑/↓: 가속·후진 | A/D 또는 ←/→: 조향 | 마우스 드래그: 카메라 회전 | 휠: 줌 | C: 카메라 추적/자유 모드")
 
     html = r"""<!DOCTYPE html>
@@ -233,14 +222,13 @@ const sun=new THREE.DirectionalLight(0xffffff,1.25);
 sun.position.set(300,500,250);scene.add(sun);
 
 const material=(color)=>new THREE.MeshLambertMaterial({color,side:THREE.DoubleSide});
-const groundMat=material(0x7fa27f); // 초록색 바닥 색상 강화
+const groundMat=material(0x7fa27f); 
 const roadMat=material(0x343638);
 const bridgeMat=material(0x42464a);
 const waterMat=material(0x527f9b);
 const markingMat=material(0xd8d6c9);
-const treeMat=material(0x3e5e3b); // 진한 초록색 대형 나무
+const treeMat=material(0x3e5e3b); 
 const trunkMat=material(0x5c4938);
-const mountainMat=material(0x4e6b4f); // 원뿔형 산 색상
 const grassMat=material(0x668f63);
 
 const textureLoader = new THREE.TextureLoader();
@@ -253,21 +241,11 @@ const buildingMat = new THREE.MeshLambertMaterial({ map: buildingTexture });
 const ground=new THREE.Mesh(new THREE.PlaneGeometry(20000,20000),groundMat);
 ground.rotation.x=-Math.PI/2;ground.position.y=-.15;scene.add(ground);
 
-// [추가] 산(원뿔 모양 초록색 블럭) 설치
-for(const m of DATA.mountains){
-  const mountainGeo = new THREE.ConeGeometry(m.height * 1.5, m.height, 6);
-  const mountainMesh = new THREE.Mesh(mountainGeo, mountainMat);
-  mountainMesh.position.set(m.x, m.height / 2 - 0.2, m.z);
-  scene.add(mountainMesh);
-}
-
-// [추가] 초록 바닥에 작은 풀(초록색 작은 구체/원기둥 조합) 및 대형 나무 배치
+// 초록 바닥 풀 장식 배치
 function addSceneryDetails(){
-  // 바닥 풀 장식 몇 개 랜덤 배치 느낌으로 생성
   for(let i=0; i<150; i++){
     let rx = (Math.random() - 0.5) * 1200;
     let rz = (Math.random() - 0.5) * 1200;
-    // 도로 한복판에 너무 많이 쏠리지 않도록 간단히 필터링 대신 무작위 초록 풀 뭉치 생성
     const grass = new THREE.Mesh(new THREE.DodecahedronGeometry(0.8), grassMat);
     grass.position.set(rx, 0, rz);
     scene.add(grass);
@@ -335,9 +313,9 @@ function drawBuilding(points,height){
   scene.add(mesh);
 }
 
-// [수정] 자동차(높이 약 1.5m, 폭 1.8m)보다 확실히 더 큰 대형 나무 (높이 ~6m 이상)
+// 자동차보다 큰 대형 나무
 function addTree(x,z){
-  const scale = 2.2; // 크기를 키움
+  const scale = 2.2;
   const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.3*scale,.4*scale,2.5*scale,6),trunkMat);
   trunk.position.set(x, 1.25*scale, z);scene.add(trunk);
   const crown=new THREE.Mesh(new THREE.ConeGeometry(1.5*scale, 3.5*scale, 6),treeMat);
@@ -562,4 +540,4 @@ window.addEventListener("resize",()=>{
     html = html.replace("__DATA__", json.dumps(data, ensure_ascii=False))
     components.html(html, height=780, scrolling=False)
 else:
-    st.info("왼쪽에서 도시/주소를 입력하고 ‘도시 불러오기’를 눌러 주세요.")
+    st.info("왼쪽 사이드바에서 도시/주소를 입력하고 ‘도시 불러오기’ 버튼을 눌러 주세요.")

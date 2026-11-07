@@ -35,7 +35,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/22.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/23.0"},
         timeout=25
     )
     response.raise_for_status()
@@ -49,7 +49,7 @@ def geocode(q):
 def get_osm(lat, lon, radius_m):
     dlat = radius_m / 111320
     dlon = radius_m / (111320 * max(math.cos(math.radians(lat)), 0.2))
-    south, west, north, east = lat-dlat, lon-dlon, lat+dlat, lon+dlon
+    south, west, north, east = lat-dlat, lon-dlon, lat+dlat, lon+dlat
 
     query = f"""
     [out:json][timeout:90];
@@ -69,7 +69,7 @@ def get_osm(lat, lon, radius_m):
         try:
             response = requests.post(
                 endpoint, data=query,
-                headers={"User-Agent": "Student3DDrivingSimulator/22.0"},
+                headers={"User-Agent": "Student3DDrivingSimulator/23.0"},
                 timeout=110
             )
             response.raise_for_status()
@@ -144,10 +144,17 @@ def convert_osm(osm, center_lat, center_lon):
                     height = levels * 3.2
                 except (ValueError, TypeError):
                     height = 10.0
+            
+            # 건물의 중심 좌표 계산
+            cx = sum(p[0] for p in points) / len(points)
+            cz = sum(p[1] for p in points) / len(points)
+            
             result["buildings"].append({
                 "points": points,
                 "height": min(max(height, 3.0), 180.0),
-                "levels": tags.get("building:levels", "")
+                "name": tags.get("name", ""),
+                "cx": cx,
+                "cz": cz
             })
 
         elif "waterway" in tags or "natural" in tags:
@@ -189,6 +196,58 @@ html,body{margin:0;padding:0;overflow:hidden;background:#bfc8ce;font-family:Aria
 button{font-size:18px;padding:12px 16px;background:#26313b;color:white;border:0;border-radius:8px;touch-action:none;cursor:pointer}
 #camBtn{position:absolute;right:12px;bottom:12px;z-index:10;font-size:13px;padding:10px}
 #game canvas{display:block;touch-action:none}
+
+/* 랜드마크 빨간 핀 마커 스타일 (빨간 배경 + 중앙 흰 원[cite: 6]) */
+#markers-container {
+  position: absolute;
+  top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 15;
+  overflow: hidden;
+}
+.map-pin {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transition: transform 0.15s ease;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.map-pin:hover {
+  transform: translate(-50%, -100%) scale(1.15);
+}
+.pin-body {
+  width: 32px;
+  height: 42px;
+  background: #e53935;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 8px rgba(0,0,0,0.35);
+}
+.pin-circle-hole {
+  width: 14px;
+  height: 14px;
+  background: #ffffff;
+  border-radius: 50%;
+  transform: rotate(45deg);
+}
+.pin-label {
+  margin-top: 5px;
+  background: rgba(20, 28, 36, 0.9);
+  color: #fff;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: bold;
+  border-radius: 4px;
+  white-space: nowrap;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+  border: 1px solid rgba(255,255,255,0.2);
+}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script>
 </head><body><div id="game">
@@ -196,12 +255,15 @@ button{font-size:18px;padding:12px 16px;background:#26313b;color:white;border:0;
 <div id="help">W/S 또는 ↑/↓: 가속·후진<br>A/D 또는 ←/→: 조향<br>마우스 드래그: 카메라 회전<br>휠: 확대·축소<br>C: 추적/자유 카메라</div>
 <div id="buttons"><button id="left">◀</button><button id="forward">▲</button><button id="back">▼</button><button id="right">▶</button></div>
 <button id="camBtn">카메라 전환 (C)</button>
+<div id="markers-container"></div>
 </div>
 <script>
 const DATA=__DATA__;
 const game=document.getElementById("game");
 const statusEl=document.getElementById("status");
 const speedEl=document.getElementById("speed");
+const markersContainer=document.getElementById("markers-container");
+
 if(!window.THREE){statusEl.textContent="Three.js 로딩 실패: CDN/인터넷 연결을 확인하세요.";throw new Error("Three.js missing");}
 
 const scene=new THREE.Scene();
@@ -237,7 +299,7 @@ buildingTexture.wrapT = THREE.RepeatWrapping;
 buildingTexture.repeat.set(1, 3);
 const buildingMat = new THREE.MeshLambertMaterial({ map: buildingTexture });
 
-// 1. 단일 평면 초록 바닥 생성 (렉 없이 부드러움)
+// 단일 평면 초록 바닥 생성
 const ground=new THREE.Mesh(new THREE.PlaneGeometry(20000,20000),groundMat);
 ground.rotation.x=-Math.PI/2;
 ground.position.y=-0.15;
@@ -400,9 +462,28 @@ for(const r of DATA.roads){
   }
 }
 
-for(const b of DATA.buildings) drawBuilding(b.points, b.height||10);
+// [핵심] 이름이 있는 주요 건물들에 빨간 핀 마커 DOM 엘리먼트 생성 및 배치
+const landmarkMarkers = [];
+for(const b of DATA.buildings) {
+  drawBuilding(b.points, b.height||10);
+  if(b.name && b.name.trim() !== "") {
+    const el = document.createElement('div');
+    el.className = 'map-pin';
+    el.innerHTML = `
+      <div class="pin-body"><div class="pin-circle-hole"></div></div>
+      <div class="pin-label">${b.name}</div>
+    `;
+    el.onclick = () => {
+      alert(`📍 장소 안내: ${b.name}\n(실제 현실의 해당 랜드마크 위치입니다.)`);
+    };
+    markersContainer.appendChild(el);
+    landmarkMarkers.push({
+      element: el,
+      position: new THREE.Vector3(b.cx, (b.height || 10) + 1.5, b.cz)
+    });
+  }
+}
 
-// 2. 파란색 강물 표시 (지면 위에 깔끔하게 렌더링)
 for(const w of DATA.water){
   for(let i=0;i<w.points.length-1;i++){
     roadQuadSloped(w.points[i], w.points[i+1], 12, waterMat, 0.02, 0.02);
@@ -547,7 +628,9 @@ function toggleCamera(){
 document.getElementById("camBtn").onclick=toggleCamera;
 
 const target=new THREE.Vector3();
+const tempVector=new THREE.Vector3();
 let lastTime=performance.now();
+
 function animate(now){
   requestAnimationFrame(animate);
   const dt=Math.min((now-lastTime)/1000,.04);lastTime=now;
@@ -607,6 +690,24 @@ function animate(now){
   }
   camera.lookAt(target);
   renderer.render(scene,camera);
+
+  // [핵심] 3D 건물의 상공 좌표를 2D 화면 좌표로 투영하여 랜드마크 핀 마커 위치 업데이트
+  const widthHalf = game.clientWidth / 2;
+  const heightHalf = game.clientHeight / 2;
+
+  for(const m of landmarkMarkers){
+    tempVector.copy(m.position);
+    tempVector.project(camera);
+    // 화면 안에 있고 카메라 앞에 있는 경우에만 표시
+    if(tempVector.z < 1.0){
+      const x = (tempVector.x * widthHalf) + widthHalf;
+      const y = -(tempVector.y * heightHalf) + heightHalf;
+      m.element.style.display = 'flex';
+      m.element.style.transform = `translate(-50%, -100%) translate(${x}px, ${y}px)`;
+    } else {
+      m.element.style.display = 'none';
+    }
+  }
 }
 camera.position.set(start[0],start[1]+5,start[1]-13);
 requestAnimationFrame(animate);

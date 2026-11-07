@@ -9,16 +9,13 @@ st.title("🚗 3D 도시 운전 시뮬레이터")
 st.caption("실제 지도 도로·건물 데이터를 바탕으로 구현된 3D 운전 시뮬레이터입니다.")
 
 with st.sidebar:
-    place = st.text_input("도시 / 주소 입력", "서울특별시 강남구")
+    place = st.text_input("도시 / 주소 입력", "서울특별시 종로구")
     
     st.markdown("---")
     st.markdown("📌 **추천 도시 입력 예시**")
+    st.markdown("- **유적지/문화재 중심:** 서울 종로구, 경주시")
     st.markdown("- **특별시/광역시:** 서울 강남구, 부산 해운대구")
     st.markdown("- **경기도:** 수원시 팔달구, 성남시 분당구")
-    st.markdown("- **강원도:** 강릉시 중앙동, 춘천시")
-    st.markdown("- **충청도:** 천안시 서북구, 청주시 흥덕구")
-    st.markdown("- **전라도:** 전주시 완산구, 여수시")
-    st.markdown("- **경상도:** 경주시, 포항시 북구")
     st.markdown("---")
 
     radius = st.select_slider(
@@ -35,7 +32,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/25.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/26.0"},
         timeout=25
     )
     response.raise_for_status()
@@ -60,6 +57,7 @@ def get_osm(lat, lon, radius_m):
       way["shop"]({south},{west},{north},{east});
       way["tourism"]({south},{west},{north},{east});
       way["leisure"]({south},{west},{north},{east});
+      way["historic"]({south},{west},{north},{east});
       way["waterway"~"river|canal"]({south},{west},{north},{east});
       way["natural"="water"]({south},{west},{north},{east});
     );
@@ -73,7 +71,7 @@ def get_osm(lat, lon, radius_m):
         try:
             response = requests.post(
                 endpoint, data=query,
-                headers={"User-Agent": "Student3DDrivingSimulator/25.0"},
+                headers={"User-Agent": "Student3DDrivingSimulator/26.0"},
                 timeout=110
             )
             response.raise_for_status()
@@ -109,40 +107,47 @@ def road_width_m(tags):
     }
     return widths.get(highway, 6.0)
 
-# 사용자가 지정한 카테고리(음식점, 쇼핑몰, 백화점, 박물관, 카페, 편의점, 시장, 시청, 법원, 공원, 도서관 등)만 필터링
-def get_filtered_landmark_name(tags):
+# 요청하신 카테고리별 색상 분류 함수 (주차장 제외, 문화재 포함)
+def get_category_and_color(tags):
     name = tags.get("name", "").strip()
     if not name or name.isdigit():
-        return None
+        return None, None
 
-    # 제외 대상 (아파트, 동 번호, 교회, 단순 빌딩 등)
+    # 제외 대상 (주차장, 일반 아파트, 동 번호, 단순 빌딩, 교회 등)
+    if "주차장" in name or "parking" in tags.get("amenity", ""):
+        return None, None
     if "아파트" in name or "교회" in name or "빌딩" in name or "동" in name:
-        if not ("백화점" in name or "쇼핑몰" in name or "시청" in name):
-            return None
+        if not ("백화점" in name or "쇼핑몰" in name or "시청" in name or "문화재" in name):
+            return None, None
 
     amenity = tags.get("amenity", "")
     shop = tags.get("shop", "")
     tourism = tags.get("tourism", "")
     leisure = tags.get("leisure", "")
-    building = tags.get("building", "")
+    historic = tags.get("historic", "")
 
-    # 유용한 시설 태그 매칭 확인
-    valid_amenities = ["restaurant", "cafe", "library", "courthouse", "town_hall", "marketplace", "convenience", "supermarket"]
-    valid_shops = ["mall", "department_store", "supermarket", "convenience", "variety_store"]
-    valid_tourism = ["museum", "attraction", "gallery"]
-    valid_leisure = ["park", "garden"]
-    valid_buildings = ["civic", "public", "commercial", "retail", "museum"]
+    # 1. 음식점·카페 (주황색 #ff9800)
+    if amenity in ["restaurant", "cafe", "fast_food", "pub", "bar"] or any(k in name for k in ["음식점", "식당", "카페", "커피", "맛집"]):
+        return name, "#ff9800"
 
-    is_target = (
-        amenity in valid_amenities or
-        shop in valid_shops or
-        tourism in valid_tourism or
-        leisure in valid_leisure or
-        building in valid_buildings or
-        any(keyword in name for keyword in ["음식점", "식당", "카페", "쇼핑몰", "백화점", "박물관", "편의점", "시장", "시청", "법원", "공원", "도서관"])
-    )
+    # 2. 편의점 (푸른색 #2196f3)
+    if shop in ["convenience"] or amenity in ["convenience"] or "편의점" in name:
+        return name, "#2196f3"
 
-    return name if is_target else None
+    # 3. 백화점·쇼핑몰·시장 (빨간색 #e53935)
+    if shop in ["mall", "department_store", "supermarket"] or amenity in ["marketplace"] or any(k in name for k in ["백화점", "쇼핑몰", "시장", "마트"]):
+        return name, "#e53935"
+
+    # 4. 공원·산·문화재/유적지 (초록색 #4caf50)
+    if leisure in ["park", "garden"] or historic != "" or tourism in ["attraction", "viewpoint"] or any(k in name for k in ["공원", "산", "문화재", "유적", "궁", "왕릉", "historic"]):
+        return name, "#4caf50"
+
+    # 5. 나머지 주요 시설 (박물관, 시청, 법원, 도서관 등) -> 보라색 #9c27b0
+    valid_others = ["library", "courthouse", "town_hall", "museum", "university", "college", "police", "fire_station"]
+    if amenity in valid_others or tourism in ["museum", "gallery"] or any(k in name for k in ["박물관", "시청", "법원", "도서관", "구청", "주민센터"]):
+        return name, "#9c27b0"
+
+    return None, None
 
 def convert_osm(osm, center_lat, center_lon):
     result = {"roads": [], "buildings": [], "water": []}
@@ -174,7 +179,7 @@ def convert_osm(osm, center_lat, center_lon):
                 "lanes": tags.get("lanes", "")
             })
 
-        elif ("building" in tags or "amenity" in tags or "shop" in tags or "tourism" in tags or "leisure" in tags) and len(points) >= 3:
+        elif len(points) >= 3 and any(k in tags for k in ["building", "amenity", "shop", "tourism", "leisure", "historic"]):
             try:
                 height = float(str(tags.get("height", "")).replace("m", "").strip())
             except (ValueError, TypeError):
@@ -187,12 +192,13 @@ def convert_osm(osm, center_lat, center_lon):
             cx = sum(p[0] for p in points) / len(points)
             cz = sum(p[1] for p in points) / len(points)
             
-            landmark_name = get_filtered_landmark_name(tags)
+            landmark_name, pin_color = get_category_and_color(tags)
 
             result["buildings"].append({
                 "points": points,
                 "height": min(max(height, 3.0), 180.0),
                 "name": landmark_name if landmark_name else "",
+                "color": pin_color if pin_color else "",
                 "cx": cx,
                 "cz": cz
             })
@@ -260,7 +266,6 @@ button{font-size:18px;padding:12px 16px;background:#26313b;color:white;border:0;
 .pin-body {
   width: 32px;
   height: 42px;
-  background: #e53935;
   border-radius: 50% 50% 50% 0;
   transform: rotate(-45deg);
   display: flex;
@@ -507,7 +512,7 @@ for(const b of DATA.buildings) {
     const el = document.createElement('div');
     el.className = 'map-pin';
     el.innerHTML = `
-      <div class="pin-body"><div class="pin-circle-hole"></div></div>
+      <div class="pin-body" style="background: ${b.color || '#9c27b0'};"><div class="pin-circle-hole"></div></div>
       <div class="pin-label">${b.name}</div>
     `;
     el.onclick = () => {

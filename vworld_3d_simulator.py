@@ -24,12 +24,12 @@ with st.sidebar:
 
     radius = st.select_slider(
         "지도 범위 반경",
-        options=[300, 400, 600, 800, 1000, 1500],
-        value=600,
+        options=[300, 400, 600, 800],
+        value=400,
         format_func=lambda x: f"{x} m"
     )
     use_elevation = st.checkbox("SRTM 실제 지형 고도 적용 (30m급)", value=True)
-    lod_distance = st.select_slider("거리 기반 상세 렌더링", options=[250, 400, 600, 900], value=400,
+    lod_distance = st.select_slider("거리 기반 상세 렌더링", options=[250, 400, 600], value=400,
                                    format_func=lambda x: f"상세 표시 {x}m 이내")
     load = st.button("도시 불러오기", type="primary")
     st.caption("차량 크기: 약 4.5m × 1.8m (실제 승용차 비율)")
@@ -39,7 +39,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/31.0 (educational project)"},
+        headers={"User-Agent": "Student3DDrivingSimulator/32.0"},
         timeout=(5, 15)
     )
     response.raise_for_status()
@@ -55,30 +55,29 @@ def get_osm(lat, lon, radius_m):
     dlon = radius_m / (111320 * max(math.cos(math.radians(lat)), 0.2))
     south, west, north, east = lat-dlat, lon-dlon, lat+dlat, lon+dlat
 
+    # 타임아웃을 줄이고 필수 태그만 빠르게 조회하도록 쿼리 최적화
     query = f"""
-    [out:json][timeout:25][maxsize:536870912];
+    [out:json][timeout:20][maxsize:268435456];
     (
-      way["highway"~"motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link"]({south},{west},{north},{east});
+      way["highway"~"primary|secondary|tertiary|residential|unclassified"]({south},{west},{north},{east});
       way["building"]({south},{west},{north},{east});
-      way["amenity"]({south},{west},{north},{east});
-      way["shop"]({south},{west},{north},{east});
-      way["tourism"]({south},{west},{north},{east});
-      way["leisure"]({south},{west},{north},{east});
+      way["amenity"~"restaurant|cafe|library|courthouse|town_hall|marketplace|convenience"]({south},{west},{north},{east});
+      way["shop"~"mall|department_store|supermarket|convenience"]({south},{west},{north},{east});
+      way["tourism"~"museum|attraction|gallery"]({south},{west},{north},{east});
+      way["leisure"="park"]({south},{west},{north},{east});
       way["historic"]({south},{west},{north},{east});
-      way["waterway"~"river|canal"]({south},{west},{north},{east});
-      way["natural"="water"]({south},{west},{north},{east});
     );
     out body geom;
     """
 
     endpoints = [
+        "https://overpass-api.de/api/interpreter",
         "https://overpass.private.coffee/api/interpreter",
         "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
-        "https://overpass-api.de/api/interpreter",
     ]
     errors = []
     headers = {
-        "User-Agent": "Student3DDrivingSimulator/31.0 (educational project)",
+        "User-Agent": "Student3DDrivingSimulator/32.0",
         "Accept": "application/json",
     }
 
@@ -88,7 +87,7 @@ def get_osm(lat, lon, radius_m):
                 endpoint,
                 data={"data": query},
                 headers=headers,
-                timeout=(6, 28),
+                timeout=(5, 20),
             )
             if response.status_code in (429, 502, 503, 504):
                 errors.append(f"{endpoint.split('/')[2]}: HTTP {response.status_code}")
@@ -108,7 +107,7 @@ def get_osm(lat, lon, radius_m):
 
     detail = " / ".join(errors[-3:])
     raise RuntimeError(
-        "OSM 서버들이 응답하지 않았습니다. 잠시 후 반경을 줄여 다시 시도해 주세요. "
+        "OSM 서버 응답 시간이 초과되었습니다. 지도 범위 반경을 작게(예: 300m~400m) 설정 후 다시 시도해 주세요. "
         f"시도 결과: {detail}"
     )
 
@@ -124,8 +123,8 @@ def query_elevation_batch(locations):
         response = requests.get(
             url,
             params={"locations": location_string, "interpolation": "bilinear"},
-            headers={"User-Agent": "Student3DDrivingSimulator/31.0"},
-            timeout=30
+            headers={"User-Agent": "Student3DDrivingSimulator/32.0"},
+            timeout=20
         )
         response.raise_for_status()
         payload = response.json()
@@ -134,17 +133,15 @@ def query_elevation_batch(locations):
         results.extend([item.get("elevation") for item in payload.get("results", [])])
         if start + 100 < len(locations):
             import time
-            time.sleep(1.1)
+            time.sleep(1.0)
     return results
 
-def add_terrain_elevation(osm, center_lat, center_lon, max_samples=200):
+def add_terrain_elevation(osm, center_lat, center_lon, max_samples=120):
     elements = osm.get("elements", [])
     road_elements = [
         el for el in elements
         if "highway" in el.get("tags", {})
         and len(el.get("geometry", [])) >= 2
-        and el.get("tags", {}).get("highway") not in
-        ("footway", "path", "steps", "cycleway", "pedestrian", "track", "bridleway")
     ]
     total_length = 0.0
     for el in road_elements:
@@ -157,7 +154,7 @@ def add_terrain_elevation(osm, center_lat, center_lon, max_samples=200):
     if total_length <= 0:
         return osm, None, "도로 길이 계산 실패"
 
-    interval = max(45.0, total_length / max_samples)
+    interval = max(60.0, total_length / max_samples)
     sample_records = []
     for road_idx, el in enumerate(road_elements):
         g = el["geometry"]
@@ -244,10 +241,7 @@ def road_width_m(tags):
     widths = {
         "motorway": 26.0, "trunk": 20.0, "primary": 14.0,
         "secondary": 11.0, "tertiary": 9.0,
-        "motorway_link": 10.0, "trunk_link": 9.0,
-        "primary_link": 8.5, "secondary_link": 7.5,
-        "tertiary_link": 7.0, "residential": 6.0,
-        "unclassified": 6.0, "living_street": 5.5
+        "residential": 6.0, "unclassified": 6.0
     }
     return widths.get(highway, 6.0)
 
@@ -280,14 +274,14 @@ def get_category_and_color(tags):
     if leisure in ["park", "garden"] or historic != "" or tourism in ["attraction", "viewpoint"] or any(k in name for k in ["공원", "산", "문화재", "유적", "궁", "왕릉"]):
         return name, "#4caf50"
 
-    valid_others = ["library", "courthouse", "town_hall", "museum", "university", "college", "police", "fire_station"]
+    valid_others = ["library", "courthouse", "town_hall", "museum", "university", "college"]
     if amenity in valid_others or tourism in ["museum", "gallery"] or any(k in name for k in ["박물관", "시청", "법원", "도서관", "구청", "주민센터"]):
         return name, "#9c27b0"
 
     return None, None
 
 def convert_osm(osm, center_lat, center_lon, center_elevation=0.0):
-    result = {"roads": [], "buildings": [], "water": []}
+    result = {"roads": [], "buildings": []}
     meters_lon = 111320 * math.cos(math.radians(center_lat))
     meters_lat = 111320
 
@@ -305,19 +299,15 @@ def convert_osm(osm, center_lat, center_lon, center_elevation=0.0):
             local_y = (float(raw_elev) - float(center_elevation)) if raw_elev is not None else 0.0
             points.append([x, z, local_y])
 
-        elevations = [p.get("_elevation") for p in geometry]
         if "highway" in tags:
             highway = tags.get("highway", "")
-            if highway in ("footway", "path", "steps", "cycleway", "pedestrian", "track", "bridleway"):
+            if highway in ("footway", "path", "steps", "cycleway", "pedestrian", "track"):
                 continue
             result["roads"].append({
                 "points": points,
                 "width": road_width_m(tags),
                 "highway": highway,
-                "name": tags.get("name", highway),
                 "bridge": tags.get("bridge") == "yes",
-                "lanes": tags.get("lanes", ""),
-                "elevations": elevations
             })
 
         elif len(points) >= 3 and any(k in tags for k in ["building", "amenity", "shop", "tourism", "leisure", "historic"]):
@@ -338,16 +328,13 @@ def convert_osm(osm, center_lat, center_lon, center_elevation=0.0):
 
             result["buildings"].append({
                 "points": points,
-                "height": min(max(height, 3.0), 180.0),
+                "height": min(max(height, 3.0), 150.0),
                 "name": landmark_name if landmark_name else "",
                 "color": pin_color if pin_color else "",
                 "cx": cx,
                 "cz": cz,
                 "cy": cy
             })
-
-        elif "waterway" in tags or "natural" in tags:
-            result["water"].append({"points": points, "name": tags.get("name", "물길")})
 
     return result
 
@@ -358,7 +345,7 @@ if "city_label" not in st.session_state:
 
 if load:
     try:
-        with st.spinner("실제 도로와 건물 데이터를 가져오는 중입니다..."):
+        with st.spinner("실제 도로와 건물 데이터를 빠르게 가져오는 중입니다..."):
             lat, lon, label = geocode(place.strip())
             raw = get_osm(lat, lon, radius)
             elevation_note = "고도 데이터 사용 안 함"
@@ -381,7 +368,7 @@ if load:
 if st.session_state.city_data:
     data = st.session_state.city_data
     st.success(f"📍 {st.session_state.city_label}")
-    st.caption(f"도로 {len(data['roads'])}개 · 건물 {len(data['buildings'])}개 · 물길 {len(data['water'])}개")
+    st.caption(f"도로 {len(data['roads'])}개 · 건물 {len(data['buildings'])}개")
     st.caption(f"⛰️ {data.get('elevation_note', '고도 데이터 상태 확인 필요')} | 상세 렌더링 거리: {data.get('lod_distance', 400)}m")
     st.info("W/S 또는 ↑/↓: 가속·후진 | A/D 또는 ←/→: 조향 | 마우스 드래그: 카메라 회전 | 휠: 줌 | C: 카메라 추적/자유 모드")
 
@@ -488,20 +475,14 @@ const material=(color)=>new THREE.MeshLambertMaterial({color,side:THREE.DoubleSi
 const groundMat=material(0x7fa27f); 
 const roadMat=material(0x343638);
 const bridgeMat=material(0x42464a);
-const waterMat=material(0x3a75c4); 
 const markingMat=material(0xd8d6c9);
 const treeMat=material(0x3e5e3b); 
 const trunkMat=material(0x5c4938);
 const grassMat=material(0x668f63);
 
-const textureLoader = new THREE.TextureLoader();
-const buildingTexture = textureLoader.load('https://threejs.org/examples/textures/brick_diffuse.jpg');
-buildingTexture.wrapS = THREE.RepeatWrapping;
-buildingTexture.wrapT = THREE.RepeatWrapping;
-buildingTexture.repeat.set(1, 3);
-const buildingMat = new THREE.MeshLambertMaterial({ map: buildingTexture });
+// 건물 초기 모형: 깔끔한 회색 단색 재질 적용
+const buildingMat = material(0x9098a0);
 
-// 지형 고도에 맞춘 스마트 초록 바닥 생성 (도로 평균 고도 기반 연동)
 let avgTerrainY = 0;
 let terrainCount = 0;
 for(const r of DATA.roads){
@@ -517,9 +498,9 @@ ground.position.y = avgTerrainY - 0.35;
 scene.add(ground);
 
 function addSceneryDetails(){
-  for(let i=0; i<150; i++){
-    let rx = (Math.random() - 0.5) * 1200;
-    let rz = (Math.random() - 0.5) * 1200;
+  for(let i=0; i<100; i++){
+    let rx = (Math.random() - 0.5) * 1000;
+    let rz = (Math.random() - 0.5) * 1000;
     const grass = new THREE.Mesh(new THREE.DodecahedronGeometry(0.8), grassMat);
     grass.position.set(rx, avgTerrainY, rz);
     scene.add(grass);
@@ -635,7 +616,7 @@ function lineSegmentSloped(a, b, width, color, yA, yB){
 }
 
 function addRoadMarkings(points, width, highway, isBridge, totalLen){
-  if(width<7 || highway==="residential" || highway==="living_street")return;
+  if(width<7 || highway==="residential")return;
   const dashLen=5.5,gap=5.5;
   let curDist=0;
   for(let i=0;i<points.length-1;i++){
@@ -658,7 +639,6 @@ function addRoadMarkings(points, width, highway, isBridge, totalLen){
   }
 }
 
-// 고도(cy)에 맞추어 건물이 지형 위에 바로 서도록 위치 조정
 function drawBuilding(points, height, cy){
   if(points.length<3)return;
   const shape=new THREE.Shape();
@@ -667,7 +647,7 @@ function drawBuilding(points, height, cy){
   shape.closePath();
   const geometry=new THREE.ExtrudeGeometry(shape,{depth:height,bevelEnabled:false});
   geometry.rotateX(-Math.PI/2);
-  const mesh=new THREE.Mesh(geometry,buildingMat);
+  const mesh=new THREE.Mesh(geometry, buildingMat);
   mesh.position.y = cy !== undefined ? cy : 0;
   scene.add(mesh);
   const cx=points.reduce((s,p)=>s+p[0],0)/points.length;
@@ -744,16 +724,15 @@ for(let rIdx = 0; rIdx < DATA.roads.length; rIdx++){
   addRoadMarkings(pts, r.width, r.highway, r.bridge, totalLen);
   if(r.bridge) addBridgeRails(pts, r.width, totalLen);
 
-  if(["primary","secondary","tertiary","trunk","residential"].includes(r.highway)){
+  if(["primary","secondary","tertiary","residential"].includes(r.highway)){
     for(let i=0;i<pts.length-1;i++){
       const a=pts[i],b=pts[i+1],dx=b[0]-a[0],dz=b[1]-a[1],len=Math.hypot(dx,dz);
-      if(len<25)continue;
+      if(len<35)continue;
       const nx=-dz/len,nz=dx/len;
-      for(let t=25;t<len;t+=70){
+      for(let t=35;t<len;t+=90){
         const x=a[0]+dx*t/len,z=a[1]+dz*t/len,off=r.width/2+5.0;
         const treeY = a.length > 2 ? a[2] : 0;
         addTree(x+nx*off, z+nz*off, treeY);
-        addTree(x-nx*off, z-nz*off, treeY);
       }
     }
   }
@@ -777,12 +756,6 @@ for(const b of DATA.buildings) {
       element: el,
       position: new THREE.Vector3(b.cx, (b.cy || 0) + (b.height || 10) + 1.5, b.cz)
     });
-  }
-}
-
-for(const w of DATA.water){
-  for(let i=0;i<w.points.length-1;i++){
-    roadQuadSloped(w.points[i], w.points[i+1], 12, waterMat, avgTerrainY, avgTerrainY, -1);
   }
 }
 

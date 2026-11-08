@@ -28,6 +28,9 @@ with st.sidebar:
         value=800,
         format_func=lambda x: f"{x} m"
     )
+    use_elevation = st.checkbox("SRTM 실제 지형 고도 적용 (30m급)", value=True)
+    lod_distance = st.select_slider("거리 기반 상세 렌더링", options=[250, 400, 600, 900], value=400,
+                                   format_func=lambda x: f"상세 표시 {x}m 이내")
     load = st.button("도시 불러오기", type="primary")
     st.caption("차량 크기: 약 4.5m × 1.8m (실제 승용차 비율)")
 
@@ -83,6 +86,133 @@ def get_osm(lat, lon, radius_m):
         except Exception as exc:
             last_error = exc
     raise RuntimeError(f"OSM 지도 요청 실패: {last_error}")
+
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def query_elevation_batch(locations):
+    """OpenTopoData SRTM 30m elevation API. Public endpoint: max 100 points/request."""
+    if not locations:
+        return []
+    url = "https://api.opentopodata.org/v1/srtm30m"
+    results = []
+    for start in range(0, len(locations), 100):
+        chunk = locations[start:start+100]
+        location_string = "|".join(f"{lat:.6f},{lon:.6f}" for lat, lon in chunk)
+        response = requests.get(
+            url,
+            params={"locations": location_string, "interpolation": "bilinear"},
+            headers={"User-Agent": "Student3DDrivingSimulator/28.0"},
+            timeout=30
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("status") != "OK":
+            raise RuntimeError(payload.get("error", "고도 API 응답 오류"))
+        results.extend([item.get("elevation") for item in payload.get("results", [])])
+        if start + 100 < len(locations):
+            import time
+            time.sleep(1.1)  # 공개 API의 요청 빈도 제한을 고려
+    return results
+
+
+def add_terrain_elevation(osm, center_lat, center_lon, max_samples=350):
+    """
+    도로를 따라 고도 표본을 최대 max_samples개 추출하고 SRTM 30m 고도를
+    도로 노드에 보간한다. DEM은 약 30m 격자이므로 작은 언덕/도로 경사로는
+    정확히 표현되지 않을 수 있다.
+    """
+    elements = osm.get("elements", [])
+    road_elements = [
+        el for el in elements
+        if "highway" in el.get("tags", {})
+        and len(el.get("geometry", [])) >= 2
+        and el.get("tags", {}).get("highway") not in
+        ("footway", "path", "steps", "cycleway", "pedestrian", "track", "bridleway")
+    ]
+    total_length = 0.0
+    for el in road_elements:
+        g = el["geometry"]
+        for a, b in zip(g[:-1], g[1:]):
+            total_length += math.hypot(
+                (b["lon"]-a["lon"])*111320*math.cos(math.radians(center_lat)),
+                (b["lat"]-a["lat"])*111320
+            )
+    if total_length <= 0:
+        return osm, None, "도로 길이 계산 실패"
+
+    # 도로 전체에서 일정한 간격으로 표본을 선택. API 요청을 과도하게 늘리지 않는다.
+    interval = max(45.0, total_length / max_samples)
+    sample_records = []  # (road element index, distance along road, lat, lon)
+    for road_idx, el in enumerate(road_elements):
+        g = el["geometry"]
+        cum = 0.0
+        next_sample = 0.0
+        for a, b in zip(g[:-1], g[1:]):
+            seg_len = math.hypot(
+                (b["lon"]-a["lon"])*111320*math.cos(math.radians(center_lat)),
+                (b["lat"]-a["lat"])*111320
+            )
+            if seg_len < 0.01:
+                continue
+            while next_sample <= cum + seg_len:
+                t = max(0.0, min(1.0, (next_sample-cum)/seg_len))
+                sample_records.append((
+                    road_idx, next_sample,
+                    a["lat"] + (b["lat"]-a["lat"])*t,
+                    a["lon"] + (b["lon"]-a["lon"])*t
+                ))
+                next_sample += interval
+            cum += seg_len
+        # include road endpoint to avoid extrapolation at the end
+        sample_records.append((road_idx, cum, g[-1]["lat"], g[-1]["lon"]))
+
+    # Hard cap safeguards against huge maps
+    if len(sample_records) > max_samples + len(road_elements):
+        sample_records = sample_records[::max(1, math.ceil(len(sample_records)/(max_samples+len(road_elements))))]
+
+    coords = [(rec[2], rec[3]) for rec in sample_records]
+    elevations = query_elevation_batch(coords)
+    by_road = {}
+    for rec, elev in zip(sample_records, elevations):
+        if elev is not None:
+            by_road.setdefault(rec[0], []).append((rec[1], float(elev)))
+
+    # Interpolate elevation along each OSM road, then attach it as tags for conversion.
+    for road_idx, el in enumerate(road_elements):
+        samples = sorted(by_road.get(road_idx, []))
+        g = el["geometry"]
+        if not samples:
+            for p in g:
+                p["_elevation"] = None
+            continue
+        cum = 0.0
+        for p_idx, p in enumerate(g):
+            if p_idx > 0:
+                prev = g[p_idx-1]
+                cum += math.hypot(
+                    (p["lon"]-prev["lon"])*111320*math.cos(math.radians(center_lat)),
+                    (p["lat"]-prev["lat"])*111320
+                )
+            left = samples[0]
+            right = samples[-1]
+            for s in range(len(samples)-1):
+                if samples[s][0] <= cum <= samples[s+1][0]:
+                    left, right = samples[s], samples[s+1]
+                    break
+            if right[0] == left[0]:
+                p["_elevation"] = left[1]
+            else:
+                t = max(0.0, min(1.0, (cum-left[0])/(right[0]-left[0])))
+                p["_elevation"] = left[1] + (right[1]-left[1])*t
+
+    # Center elevation for local vertical origin
+    # Use sampled road elevations as local vertical datum (avoids one extra API call).
+    valid = [e for vals in by_road.values() for _, e in vals]
+    center_elev = sum(valid)/len(valid) if valid else 0.0
+
+    return osm, float(center_elev), f"SRTM 30m 표본 {len(coords)}개"
+
 
 def road_width_m(tags):
     highway = tags.get("highway", "")
@@ -151,7 +281,7 @@ def get_category_and_color(tags):
 
     return None, None
 
-def convert_osm(osm, center_lat, center_lon):
+def convert_osm(osm, center_lat, center_lon, center_elevation=0.0):
     result = {"roads": [], "buildings": [], "water": []}
     meters_lon = 111320 * math.cos(math.radians(center_lat))
     meters_lat = 111320
@@ -166,8 +296,11 @@ def convert_osm(osm, center_lat, center_lon):
         for point in geometry:
             x = (float(point["lon"]) - center_lon) * meters_lon
             z = -(float(point["lat"]) - center_lat) * meters_lat
-            points.append([x, z])
+            raw_elev = point.get("_elevation")
+            local_y = (float(raw_elev) - float(center_elevation)) if raw_elev is not None else 0.0
+            points.append([x, z, local_y])
 
+        elevations = [p.get("_elevation") for p in geometry]
         if "highway" in tags:
             highway = tags.get("highway", "")
             if highway in ("footway", "path", "steps", "cycleway", "pedestrian", "track", "bridleway"):
@@ -178,7 +311,8 @@ def convert_osm(osm, center_lat, center_lon):
                 "highway": highway,
                 "name": tags.get("name", highway),
                 "bridge": tags.get("bridge") == "yes",
-                "lanes": tags.get("lanes", "")
+                "lanes": tags.get("lanes", ""),
+                "elevations": elevations
             })
 
         elif len(points) >= 3 and any(k in tags for k in ["building", "amenity", "shop", "tourism", "leisure", "historic"]):
@@ -220,7 +354,19 @@ if load:
         with st.spinner("실제 도로와 건물 데이터를 가져오는 중입니다..."):
             lat, lon, label = geocode(place.strip())
             raw = get_osm(lat, lon, radius)
-            st.session_state.city_data = convert_osm(raw, lat, lon)
+            elevation_note = "고도 데이터 사용 안 함"
+            if use_elevation:
+                try:
+                    raw, center_elev, elevation_note = add_terrain_elevation(raw, lat, lon)
+                except Exception as elev_error:
+                    center_elev = 0.0
+                    elevation_note = f"고도 API 실패(평지 대체): {elev_error}"
+            else:
+                center_elev = 0.0
+            st.session_state.city_data = convert_osm(raw, lat, lon, center_elev or 0.0)
+            st.session_state.city_data["center_elevation"] = center_elev or 0.0
+            st.session_state.city_data["elevation_note"] = elevation_note
+            st.session_state.city_data["lod_distance"] = lod_distance
             st.session_state.city_label = label
     except Exception as error:
         st.error(f"도시를 불러오지 못했습니다: {error}")
@@ -229,6 +375,7 @@ if st.session_state.city_data:
     data = st.session_state.city_data
     st.success(f"📍 {st.session_state.city_label}")
     st.caption(f"도로 {len(data['roads'])}개 · 건물 {len(data['buildings'])}개 · 물길 {len(data['water'])}개")
+    st.caption(f"⛰️ {data.get('elevation_note', '고도 데이터 상태 확인 필요')} | 상세 렌더링 거리: {data.get('lod_distance', 400)}m")
     st.info("W/S 또는 ↑/↓: 가속·후진 | A/D 또는 ←/→: 조향 | 마우스 드래그: 카메라 회전 | 휠: 줌 | C: 카메라 추적/자유 모드")
 
     html = r"""<!DOCTYPE html>
@@ -313,6 +460,8 @@ const markersContainer=document.getElementById("markers-container");
 if(!window.THREE){statusEl.textContent="Three.js 로딩 실패: CDN/인터넷 연결을 확인하세요.";throw new Error("Three.js missing");}
 
 const scene=new THREE.Scene();
+const lodObjects=[];
+const LOD_DISTANCE=Number(DATA.lod_distance||400);
 scene.background=new THREE.Color(0xb8c6d1);
 scene.fog=new THREE.Fog(0xb8c6d1,450,2600);
 const camera=new THREE.PerspectiveCamera(65,game.clientWidth/game.clientHeight,.1,12000);
@@ -376,7 +525,10 @@ function roadQuadSloped(a, b, width, mat, yA, yB){
   const geo=new THREE.BufferGeometry();
   geo.setAttribute("position",new THREE.BufferAttribute(vertices,3));
   geo.computeVertexNormals();
-  scene.add(new THREE.Mesh(geo,mat));
+  const mesh=new THREE.Mesh(geo,mat);
+  scene.add(mesh);
+  const cx=(a[0]+b[0])/2, cz=(a[1]+b[1])/2;
+  lodObjects.push({mesh,x:cx,z:cz,type:"road"});
 }
 
 function lineSegmentSloped(a, b, width, color, yA, yB){
@@ -408,9 +560,11 @@ function addRoadMarkings(points, width, highway, isBridge, totalLen){
     for(let t=2;t<len-1;t+=dashLen+gap){
       const end=Math.min(t+dashLen,len-1);
       let yA = 0.065, yB = 0.065;
-      if(isBridge && totalLen > 0){
-        yA = getRoadHeightAtDist(segStartDist + t, totalLen, true);
-        yB = getRoadHeightAtDist(segStartDist + end, totalLen, true);
+      if(totalLen > 0){
+        const terrainA = a.length > 2 ? a[2] : 0;
+        const terrainB = b.length > 2 ? b[2] : 0;
+        yA = getRoadHeightAtDist(segStartDist + t, totalLen, isBridge, terrainA, terrainB, t/len);
+        yB = getRoadHeightAtDist(segStartDist + end, totalLen, isBridge, terrainA, terrainB, end/len);
       }
       lineSegmentSloped([a[0]+ux*t,a[1]+uz*t],[a[0]+ux*end,a[1]+uz*end],.12,markingMat,yA,yB);
     }
@@ -428,6 +582,9 @@ function drawBuilding(points,height){
   const mesh=new THREE.Mesh(geometry,buildingMat);
   mesh.position.y=0;
   scene.add(mesh);
+  const cx=points.reduce((s,p)=>s+p[0],0)/points.length;
+  const cz=points.reduce((s,p)=>s+p[1],0)/points.length;
+  lodObjects.push({mesh, x:cx, z:cz, type:"building"});
 }
 
 function addTree(x,z){
@@ -436,6 +593,7 @@ function addTree(x,z){
   trunk.position.set(x, 1.25*scale, z);scene.add(trunk);
   const crown=new THREE.Mesh(new THREE.ConeGeometry(1.5*scale, 3.5*scale, 6),treeMat);
   crown.position.set(x, 3.2*scale, z);scene.add(crown);
+  lodObjects.push({mesh:trunk,x,z,type:"tree"},{mesh:crown,x,z,type:"tree"});
 }
 
 function addBridgeRails(points,width,totalLen){
@@ -448,8 +606,8 @@ function addBridgeRails(points,width,totalLen){
     curDist += len;
     for(const side of [-1,1]){
       const offset=width/2+.3;
-      const yA = getRoadHeightAtDist(segStart, totalLen, true);
-      const yB = getRoadHeightAtDist(curDist, totalLen, true);
+      const yA = getRoadHeightAtDist(segStart, totalLen, true, a[2]||0, b[2]||0, 0);
+      const yB = getRoadHeightAtDist(curDist, totalLen, true, a[2]||0, b[2]||0, 1);
       const rail=new THREE.Mesh(new THREE.BoxGeometry(.18,.8,len),material(0x777b7e));
       rail.position.set((a[0]+b[0])/2+nx*offset, (yA+yB)/2 + 0.4, (a[1]+b[1])/2+nz*offset);
       rail.rotation.y=Math.atan2(dx,dz);
@@ -459,15 +617,17 @@ function addBridgeRails(points,width,totalLen){
   }
 }
 
-function getRoadHeightAtDist(dist, totalLen, isBridge){
-  if(!isBridge || totalLen <= 0) return 0.035;
+function getRoadHeightAtDist(dist, totalLen, isBridge, terrainA=0, terrainB=0, segmentT=null){
+  const tTerrain = segmentT===null ? (totalLen>0?Math.max(0,Math.min(1,dist/totalLen)):0) : Math.max(0,Math.min(1,segmentT));
+  const terrainY = terrainA + (terrainB-terrainA) * tTerrain;
+  if(!isBridge || totalLen <= 0) return terrainY + 0.035;
   const rampLen = Math.min(15, totalLen * 0.25);
   if(dist < rampLen){
-    return 0.035 + (1.8 - 0.035) * (dist / rampLen);
+    return terrainY + 0.035 + (1.8 - 0.035) * (dist / rampLen);
   } else if(dist > totalLen - rampLen){
-    return 0.035 + (1.8 - 0.035) * ((totalLen - dist) / rampLen);
+    return terrainY + 0.035 + (1.8 - 0.035) * ((totalLen - dist) / rampLen);
   } else {
-    return 1.8;
+    return terrainY + 1.8;
   }
 }
 
@@ -486,8 +646,10 @@ for(const r of DATA.roads){
     if(len < 0.05) continue;
     const dStart = accum;
     accum += len;
-    const yA = getRoadHeightAtDist(dStart, totalLen, r.bridge);
-    const yB = getRoadHeightAtDist(accum, totalLen, r.bridge);
+    const terrainA = a.length > 2 ? a[2] : 0;
+    const terrainB = b.length > 2 ? b[2] : 0;
+    const yA = getRoadHeightAtDist(dStart, totalLen, r.bridge, terrainA, terrainB, 0);
+    const yB = getRoadHeightAtDist(accum, totalLen, r.bridge, terrainA, terrainB, 1);
     roadQuadSloped(a, b, r.width, r.bridge?bridgeMat:roadMat, yA, yB);
   }
   addRoadMarkings(pts, r.width, r.highway, r.bridge, totalLen);
@@ -589,35 +751,32 @@ function buildingCollision(x,z,yaw){
 }
 
 function getCarHeight(x, z){
-  let bridgeY = null;
-  let minBridgeDist = 999;
-  for(let r of DATA.roads){
-    if(!r.bridge) continue;
-    let pts = r.points;
-    let totalLen = 0;
-    let segs = [];
-    for(let i=0; i<pts.length-1; i++){
-      let l = Math.hypot(pts[i+1][0]-pts[i][0], pts[i+1][1]-pts[i][1]);
-      segs.push(l); totalLen += l;
+  let bestDist=Infinity, bestHeight=0.035;
+  for(const r of DATA.roads){
+    const pts=r.points;
+    let totalLen=0, segLengths=[];
+    for(let i=0;i<pts.length-1;i++){
+      const l=Math.hypot(pts[i+1][0]-pts[i][0],pts[i+1][1]-pts[i][1]);
+      segLengths.push(l); totalLen+=l;
     }
-    let accum = 0;
-    for(let i=0; i<pts.length-1; i++){
-      let a = pts[i], b = pts[i+1], len = segs[i];
-      if(len < 0.05) continue;
-      let d = distToSeg(x, z, a, b);
-      if(d < r.width/2 && d < minBridgeDist){
-        minBridgeDist = d;
-        let t = 0;
-        let vx = b[0]-a[0], vz = b[1]-a[1];
-        let l2 = vx*vx + vz*vz;
-        if(l2 > 0) t = Math.max(0, Math.min(1, ((x - a[0])*vx + (z - a[1])*vz)/l2));
-        bridgeY = getRoadHeightAtDist(accum + t * len, totalLen, true);
+    let accum=0;
+    for(let i=0;i<pts.length-1;i++){
+      const a=pts[i], b=pts[i+1], len=segLengths[i];
+      if(len<.05)continue;
+      const d=distToSeg(x,z,a,b);
+      if(d<=r.width/2+2 && d<bestDist){
+        const vx=b[0]-a[0], vz=b[1]-a[1], l2=vx*vx+vz*vz;
+        const t=l2?Math.max(0,Math.min(1,((x-a[0])*vx+(z-a[1])*vz)/l2)):0;
+        const terrainA=a.length>2?a[2]:0, terrainB=b.length>2?b[2]:0;
+        const terrain=terrainA+(terrainB-terrainA)*t;
+        const bridgeExtra=r.bridge?getRoadHeightAtDist(accum+t*len,totalLen,true,terrainA,terrainB,t)-terrain:0;
+        bestHeight=terrain+bridgeExtra+.035;
+        bestDist=d;
       }
-      accum += len;
+      accum+=len;
     }
   }
-  if(minBridgeDist < 12 && bridgeY !== null) return bridgeY;
-  return 0.035;
+  return bestHeight;
 }
 
 let startRoad=DATA.roads.find(r=>r.points.length>=2);
@@ -674,6 +833,7 @@ document.getElementById("camBtn").onclick=toggleCamera;
 const target=new THREE.Vector3();
 const tempVector=new THREE.Vector3();
 let lastTime=performance.now();
+let lastLodUpdate=0;
 
 function animate(now){
   requestAnimationFrame(animate);
@@ -711,6 +871,16 @@ function animate(now){
     statusEl.textContent="💥 쾅! 건물에 부딪혀 뒤로 튕겨 나갑니다!";
   }
   speedEl.textContent=Math.round(Math.abs(velocity)*3.6);
+
+  if(now-lastLodUpdate>500){
+    lastLodUpdate=now;
+    for(const item of lodObjects){
+      const d=Math.hypot(item.x-car.position.x,item.z-car.position.z);
+      // Road meshes visible farther away than detailed buildings/trees.
+      const limit=item.type==="road" ? LOD_DISTANCE*1.8 : LOD_DISTANCE;
+      item.mesh.visible=d<limit;
+    }
+  }
 
   if(follow){
     const desiredYaw=orbitYaw;
@@ -751,7 +921,7 @@ function animate(now){
     }
   }
 }
-camera.position.set(start[0],start[1]+5,start[1]-13);
+camera.position.set(start[0],car.position.y+5,start[1]-13);
 requestAnimationFrame(animate);
 window.addEventListener("resize",()=>{
   camera.aspect=game.clientWidth/game.clientHeight;

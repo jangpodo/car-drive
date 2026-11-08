@@ -28,7 +28,7 @@ with st.sidebar:
         value=400,
         format_func=lambda x: f"{x} m"
     )
-    use_elevation = st.checkbox("SRTM 실제 지형 고도 적용 (30m급)", value=True)
+    use_elevation = st.checkbox("SRTM 실제 지형 고도 적용 (최저점 기준)", value=True)
     lod_distance = st.select_slider("거리 기반 상세 렌더링", options=[250, 400, 600], value=400,
                                    format_func=lambda x: f"상세 표시 {x}m 이내")
     load = st.button("도시 불러오기", type="primary")
@@ -39,7 +39,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/33.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/34.0"},
         timeout=(5, 15)
     )
     response.raise_for_status()
@@ -76,7 +76,7 @@ def get_osm(lat, lon, radius_m):
     ]
     errors = []
     headers = {
-        "User-Agent": "Student3DDrivingSimulator/33.0",
+        "User-Agent": "Student3DDrivingSimulator/34.0",
         "Accept": "application/json",
     }
 
@@ -122,7 +122,7 @@ def query_elevation_batch(locations):
         response = requests.get(
             url,
             params={"locations": location_string, "interpolation": "bilinear"},
-            headers={"User-Agent": "Student3DDrivingSimulator/33.0"},
+            headers={"User-Agent": "Student3DDrivingSimulator/34.0"},
             timeout=20
         )
         response.raise_for_status()
@@ -151,7 +151,7 @@ def add_terrain_elevation(osm, center_lat, center_lon, max_samples=120):
                 (b["lat"]-a["lat"])*111320
             )
     if total_length <= 0:
-        return osm, None, "도로 길이 계산 실패"
+        return osm, 0.0, "도로 길이 계산 실패"
 
     interval = max(60.0, total_length / max_samples)
     sample_records = []
@@ -216,9 +216,10 @@ def add_terrain_elevation(osm, center_lat, center_lon, max_samples=120):
                 p["_elevation"] = left[1] + (right[1]-left[1])*t
 
     valid = [e for vals in by_road.values() for _, e in vals]
-    center_elev = sum(valid)/len(valid) if valid else 0.0
+    # 가장 고도가 낮은 곳을 기준(0)으로 설정
+    min_elev = min(valid) if valid else 0.0
 
-    return osm, float(center_elev), f"SRTM 30m 표본 {len(coords)}개"
+    return osm, float(min_elev), f"SRTM 30m 표본 {len(coords)}개 (최저점 기준 적용)"
 
 def road_width_m(tags):
     highway = tags.get("highway", "")
@@ -279,7 +280,7 @@ def get_category_and_color(tags):
 
     return None, None
 
-def convert_osm(osm, center_lat, center_lon, center_elevation=0.0):
+def convert_osm(osm, center_lat, center_lon, base_elevation=0.0):
     result = {"roads": [], "buildings": []}
     meters_lon = 111320 * math.cos(math.radians(center_lat))
     meters_lat = 111320
@@ -295,7 +296,8 @@ def convert_osm(osm, center_lat, center_lon, center_elevation=0.0):
             x = (float(point["lon"]) - center_lon) * meters_lon
             z = -(float(point["lat"]) - center_lat) * meters_lat
             raw_elev = point.get("_elevation")
-            local_y = (float(raw_elev) - float(center_elevation)) if raw_elev is not None else 0.0
+            # 최저점(base_elevation)을 기준으로 한 상대 고도 계산 (최저점 = 0)
+            local_y = (float(raw_elev) - float(base_elevation)) if raw_elev is not None else 0.0
             points.append([x, z, local_y])
 
         if "highway" in tags:
@@ -348,16 +350,17 @@ if load:
             lat, lon, label = geocode(place.strip())
             raw = get_osm(lat, lon, radius)
             elevation_note = "고도 데이터 사용 안 함"
+            base_elev = 0.0
             if use_elevation:
                 try:
-                    raw, center_elev, elevation_note = add_terrain_elevation(raw, lat, lon)
+                    raw, base_elev, elevation_note = add_terrain_elevation(raw, lat, lon)
                 except Exception as elev_error:
-                    center_elev = 0.0
+                    base_elev = 0.0
                     elevation_note = f"고도 API 실패(평지 대체): {elev_error}"
             else:
-                center_elev = 0.0
-            st.session_state.city_data = convert_osm(raw, lat, lon, center_elev or 0.0)
-            st.session_state.city_data["center_elevation"] = center_elev or 0.0
+                base_elev = 0.0
+            st.session_state.city_data = convert_osm(raw, lat, lon, base_elev or 0.0)
+            st.session_state.city_data["base_elevation"] = base_elev or 0.0
             st.session_state.city_data["elevation_note"] = elevation_note
             st.session_state.city_data["lod_distance"] = lod_distance
             st.session_state.city_label = label
@@ -479,6 +482,12 @@ const treeMat=material(0x3e5e3b);
 const trunkMat=material(0x5c4938);
 const buildingMat = material(0x9098a0);
 
+// 최저점(0)을 기준으로 한 바닥 기준점
+const ground=new THREE.Mesh(new THREE.PlaneGeometry(20000,20000),groundMat);
+ground.rotation.x=-Math.PI/2;
+ground.position.y = -0.35;
+scene.add(ground);
+
 function addSceneryDetails(){
   for(let i=0; i<80; i++){
     let rx = (Math.random() - 0.5) * 800;
@@ -503,16 +512,15 @@ function isNearOtherRoad(x, z, currentRoadIndex) {
   return false;
 }
 
-// 각 도로 세그먼트마다 고도(yA, yB)에 맞춘 로컬 초록색 지형 및 지지대 생성 (단일 대지 판 제거)
+// 각 도로 세그먼트마다 고도에 맞춘 로컬 지형 및 지지대 생성
 function roadLocalGroundAndSkirt(a, b, width, yA, yB) {
   const dx=b[0]-a[0], dz=b[1]-a[1], len=Math.hypot(dx,dz);
   if(len<.05)return;
   const nx=-dz/len, nz=dx/len;
-  const shoulderWidth = width + 10.0; // 도로 양옆의 초록색 로컬 지형 폭
+  const shoulderWidth = width + 10.0;
   const halfS = shoulderWidth / 2;
-  const baseDrop = Math.min(yA, yB) - 3.0;
+  const baseDrop = Math.min(yA, yB) - 4.0;
 
-  // 로컬 지형 상판 (도로 양옆의 초록색 대지)
   const l1 = [a[0]-nx*halfS, a[1]-nz*halfS];
   const l2 = [b[0]-nx*halfS, b[1]-nz*halfS];
   const r1 = [a[0]+nx*halfS, a[1]+nz*halfS];
@@ -527,7 +535,6 @@ function roadLocalGroundAndSkirt(a, b, width, yA, yB) {
   geoTop.computeVertexNormals();
   scene.add(new THREE.Mesh(geoTop, groundMat));
 
-  // 지지대(Skirt) - 바닥 아래로 자연스럽게 연결
   const vertsSkirtL = new Float32Array([
     l1[0], yA, l1[1],  l1[0], baseDrop, l1[1],  l2[0], baseDrop, l2[1],
     l1[0], yA, l1[1],  l2[0], baseDrop, l2[1],  l2[0], yB, l2[1]

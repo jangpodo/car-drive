@@ -39,7 +39,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/35.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/36.0"},
         timeout=(5, 15)
     )
     response.raise_for_status()
@@ -76,7 +76,7 @@ def get_osm(lat, lon, radius_m):
     ]
     errors = []
     headers = {
-        "User-Agent": "Student3DDrivingSimulator/35.0",
+        "User-Agent": "Student3DDrivingSimulator/36.0",
         "Accept": "application/json",
     }
 
@@ -122,7 +122,7 @@ def query_elevation_batch(locations):
         response = requests.get(
             url,
             params={"locations": location_string, "interpolation": "bilinear"},
-            headers={"User-Agent": "Student3DDrivingSimulator/35.0"},
+            headers={"User-Agent": "Student3DDrivingSimulator/36.0"},
             timeout=20
         )
         response.raise_for_status()
@@ -151,7 +151,7 @@ def add_terrain_elevation(osm, center_lat, center_lon, max_samples=120):
                 (b["lat"]-a["lat"])*111320
             )
     if total_length <= 0:
-        return osm, 0.0, "도로 길이 계산 실패"
+        return osm, 0.0, [], "도로 길이 계산 실패"
 
     interval = max(60.0, total_length / max_samples)
     sample_records = []
@@ -184,9 +184,12 @@ def add_terrain_elevation(osm, center_lat, center_lon, max_samples=120):
     coords = [(rec[2], rec[3]) for rec in sample_records]
     elevations = query_elevation_batch(coords)
     by_road = {}
+    terrain_samples = []
+    
     for rec, elev in zip(sample_records, elevations):
         if elev is not None:
             by_road.setdefault(rec[0], []).append((rec[1], float(elev)))
+            terrain_samples.append((rec[2], rec[3], float(elev)))
 
     for road_idx, el in enumerate(road_elements):
         samples = sorted(by_road.get(road_idx, []))
@@ -215,10 +218,10 @@ def add_terrain_elevation(osm, center_lat, center_lon, max_samples=120):
                 t = max(0.0, min(1.0, (cum-left[0])/(right[0]-left[0])))
                 p["_elevation"] = left[1] + (right[1]-left[1])*t
 
-    valid = [e for vals in by_road.values() for _, e in vals]
+    valid = [e for _, _, e in terrain_samples]
     min_elev = min(valid) if valid else 0.0
 
-    return osm, float(min_elev), f"SRTM 30m 표본 {len(coords)}개 (최저점 기준 적용)"
+    return osm, float(min_elev), terrain_samples, f"SRTM 30m 표본 {len(coords)}개 (최저점 기준 적용)"
 
 def road_width_m(tags):
     highway = tags.get("highway", "")
@@ -279,10 +282,26 @@ def get_category_and_color(tags):
 
     return None, None
 
-def convert_osm(osm, center_lat, center_lon, base_elevation=0.0):
+def convert_osm(osm, center_lat, center_lon, base_elevation=0.0, terrain_samples=None):
     result = {"roads": [], "buildings": []}
     meters_lon = 111320 * math.cos(math.radians(center_lat))
     meters_lat = 111320
+
+    if terrain_samples is None:
+        terrain_samples = []
+
+    def get_terrain_height_at(lat, lon):
+        if not terrain_samples:
+            return 0.0
+        # 가장 가까운 지형 샘플 고도 찾기
+        min_dist = float('inf')
+        nearest_elev = 0.0
+        for slat, slon, selev in terrain_samples:
+            d = (lat - slat)**2 + (lon - slon)**2
+            if d < min_dist:
+                min_dist = d
+                nearest_elev = selev
+        return float(nearest_elev) - float(base_elevation)
 
     for element in osm.get("elements", []):
         tags = element.get("tags", {})
@@ -292,10 +311,16 @@ def convert_osm(osm, center_lat, center_lon, base_elevation=0.0):
 
         points = []
         for point in geometry:
-            x = (float(point["lon"]) - center_lon) * meters_lon
-            z = -(float(point["lat"]) - center_lat) * meters_lat
+            lat = float(point["lat"])
+            lon = float(point["lon"])
+            x = (lon - center_lon) * meters_lon
+            z = -(lat - center_lat) * meters_lat
+            
             raw_elev = point.get("_elevation")
-            local_y = (float(raw_elev) - float(base_elevation)) if raw_elev is not None else 0.0
+            if raw_elev is not None:
+                local_y = float(raw_elev) - float(base_elevation)
+            else:
+                local_y = get_terrain_height_at(lat, lon)
             points.append([x, z, local_y])
 
         if "highway" in tags:
@@ -321,7 +346,11 @@ def convert_osm(osm, center_lat, center_lon, base_elevation=0.0):
             
             cx = sum(p[0] for p in points) / len(points)
             cz = sum(p[1] for p in points) / len(points)
-            cy = sum(p[2] for p in points) / len(points)
+            
+            # 건물의 중심 좌표(lat, lon) 계산하여 실제 지형 고도 반영
+            center_pt_lat = center_lat - (cz / meters_lat)
+            center_pt_lon = center_lon + (cx / meters_lon)
+            cy = get_terrain_height_at(center_pt_lat, center_pt_lon)
             
             landmark_name, pin_color = get_category_and_color(tags)
 
@@ -344,20 +373,21 @@ if "city_label" not in st.session_state:
 
 if load:
     try:
-        with st.spinner("실제 도로와 건물 데이터를 빠르게 가져오는 중입니다..."):
+        with st.spinner("실제 도로와 건물 데이터를 고도에 맞춰 빠르게 가져오는 중입니다..."):
             lat, lon, label = geocode(place.strip())
             raw = get_osm(lat, lon, radius)
             elevation_note = "고도 데이터 사용 안 함"
             base_elev = 0.0
+            terrain_samples = []
             if use_elevation:
                 try:
-                    raw, base_elev, elevation_note = add_terrain_elevation(raw, lat, lon)
+                    raw, base_elev, terrain_samples, elevation_note = add_terrain_elevation(raw, lat, lon)
                 except Exception as elev_error:
                     base_elev = 0.0
                     elevation_note = f"고도 API 실패(평지 대체): {elev_error}"
             else:
                 base_elev = 0.0
-            st.session_state.city_data = convert_osm(raw, lat, lon, base_elev or 0.0)
+            st.session_state.city_data = convert_osm(raw, lat, lon, base_elev or 0.0, terrain_samples)
             st.session_state.city_data["base_elevation"] = base_elev or 0.0
             st.session_state.city_data["elevation_note"] = elevation_note
             st.session_state.city_data["lod_distance"] = lod_distance
@@ -639,7 +669,7 @@ function addRoadMarkings(points, width, highway, isBridge, totalLen){
   }
 }
 
-// 건물 하단에 지형 기단(Foundation/Skirt)을 생성하여 공중에 떠 있지 않도록 보완
+// 건물과 하단 지형 기단(Foundation Skirt)을 고도(cy)에 맞추어 생성
 function drawBuilding(points, height, cy){
   if(points.length<3)return;
   const shape=new THREE.Shape();
@@ -647,14 +677,14 @@ function drawBuilding(points, height, cy){
   for(let i=1;i<points.length;i++)shape.lineTo(points[i][0],-points[i][1]);
   shape.closePath();
   
-  // 1. 건물 본체
+  // 1. 건물 본체 (지형 고도 cy 만큼 들어올려짐)
   const geometry=new THREE.ExtrudeGeometry(shape,{depth:height,bevelEnabled:false});
   geometry.rotateX(-Math.PI/2);
   const mesh=new THREE.Mesh(geometry, buildingMat);
   mesh.position.y = cy !== undefined ? cy : 0;
   scene.add(mesh);
 
-  // 2. 건물 아래를 땅(0)까지 든든하게 받쳐주는 초록색 기단(Foundation Skirt) 생성
+  // 2. 건물 아래를 바닥까지 든든하게 받쳐주는 초록색 기단(Foundation Skirt)
   const baseDepth = cy;
   if(baseDepth > 0.1) {
     const baseGeometry = new THREE.ExtrudeGeometry(shape, {depth: baseDepth, bevelEnabled: false});

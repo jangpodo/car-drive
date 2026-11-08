@@ -39,7 +39,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/29.0 (educational project)"},
+        headers={"User-Agent": "Student3DDrivingSimulator/30.0 (educational project)"},
         timeout=(5, 15)
     )
     response.raise_for_status()
@@ -51,17 +51,10 @@ def geocode(q):
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def get_osm(lat, lon, radius_m):
-    """
-    OSM 데이터를 가져온다.
-    - 위도/경도 경계 계산을 분리해 동서 범위 오류를 방지
-    - 공개 Overpass 서버 여러 곳을 순차적으로 시도
-    - 각 서버 응답 대기 시간을 제한해 2분 이상 멈추는 현상을 줄임
-    """
     dlat = radius_m / 111320
     dlon = radius_m / (111320 * max(math.cos(math.radians(lat)), 0.2))
-    south, west, north, east = lat-dlat, lon-dlon, lat+dlat, lon+dlon
+    south, west, north, east = lat-dlat, lon-dlon, lat+dlat, lon+dlat
 
-    # [timeout]은 Overpass 서버 내부 쿼리 제한, requests timeout은 HTTP 응답 대기 제한이다.
     query = f"""
     [out:json][timeout:25][maxsize:536870912];
     (
@@ -78,7 +71,6 @@ def get_osm(lat, lon, radius_m):
     out body geom;
     """
 
-    # Kumi는 Private.coffee가 운영하는 인스턴스로 이전되었으므로 새 주소를 사용한다.
     endpoints = [
         "https://overpass.private.coffee/api/interpreter",
         "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
@@ -86,7 +78,7 @@ def get_osm(lat, lon, radius_m):
     ]
     errors = []
     headers = {
-        "User-Agent": "Student3DDrivingSimulator/29.0 (educational project)",
+        "User-Agent": "Student3DDrivingSimulator/30.0 (educational project)",
         "Accept": "application/json",
     }
 
@@ -96,7 +88,7 @@ def get_osm(lat, lon, radius_m):
                 endpoint,
                 data={"data": query},
                 headers=headers,
-                timeout=(6, 28),  # 연결 6초, 응답 대기 28초
+                timeout=(6, 28),
             )
             if response.status_code in (429, 502, 503, 504):
                 errors.append(f"{endpoint.split('/')[2]}: HTTP {response.status_code}")
@@ -120,11 +112,8 @@ def get_osm(lat, lon, radius_m):
         f"시도 결과: {detail}"
     )
 
-
-
 @st.cache_data(ttl=86400, show_spinner=False)
 def query_elevation_batch(locations):
-    """OpenTopoData SRTM 30m elevation API. Public endpoint: max 100 points/request."""
     if not locations:
         return []
     url = "https://api.opentopodata.org/v1/srtm30m"
@@ -135,7 +124,7 @@ def query_elevation_batch(locations):
         response = requests.get(
             url,
             params={"locations": location_string, "interpolation": "bilinear"},
-            headers={"User-Agent": "Student3DDrivingSimulator/28.0"},
+            headers={"User-Agent": "Student3DDrivingSimulator/30.0"},
             timeout=30
         )
         response.raise_for_status()
@@ -145,16 +134,10 @@ def query_elevation_batch(locations):
         results.extend([item.get("elevation") for item in payload.get("results", [])])
         if start + 100 < len(locations):
             import time
-            time.sleep(1.1)  # 공개 API의 요청 빈도 제한을 고려
+            time.sleep(1.1)
     return results
 
-
 def add_terrain_elevation(osm, center_lat, center_lon, max_samples=200):
-    """
-    도로를 따라 고도 표본을 최대 max_samples개 추출하고 SRTM 30m 고도를
-    도로 노드에 보간한다. DEM은 약 30m 격자이므로 작은 언덕/도로 경사로는
-    정확히 표현되지 않을 수 있다.
-    """
     elements = osm.get("elements", [])
     road_elements = [
         el for el in elements
@@ -174,9 +157,8 @@ def add_terrain_elevation(osm, center_lat, center_lon, max_samples=200):
     if total_length <= 0:
         return osm, None, "도로 길이 계산 실패"
 
-    # 도로 전체에서 일정한 간격으로 표본을 선택. API 요청을 과도하게 늘리지 않는다.
     interval = max(45.0, total_length / max_samples)
-    sample_records = []  # (road element index, distance along road, lat, lon)
+    sample_records = []
     for road_idx, el in enumerate(road_elements):
         g = el["geometry"]
         cum = 0.0
@@ -197,10 +179,8 @@ def add_terrain_elevation(osm, center_lat, center_lon, max_samples=200):
                 ))
                 next_sample += interval
             cum += seg_len
-        # include road endpoint to avoid extrapolation at the end
         sample_records.append((road_idx, cum, g[-1]["lat"], g[-1]["lon"]))
 
-    # Hard cap safeguards against huge maps
     if len(sample_records) > max_samples:
         stride = max(1, math.ceil(len(sample_records) / max_samples))
         sample_records = sample_records[::stride]
@@ -212,7 +192,6 @@ def add_terrain_elevation(osm, center_lat, center_lon, max_samples=200):
         if elev is not None:
             by_road.setdefault(rec[0], []).append((rec[1], float(elev)))
 
-    # Interpolate elevation along each OSM road, then attach it as tags for conversion.
     for road_idx, el in enumerate(road_elements):
         samples = sorted(by_road.get(road_idx, []))
         g = el["geometry"]
@@ -240,13 +219,10 @@ def add_terrain_elevation(osm, center_lat, center_lon, max_samples=200):
                 t = max(0.0, min(1.0, (cum-left[0])/(right[0]-left[0])))
                 p["_elevation"] = left[1] + (right[1]-left[1])*t
 
-    # Center elevation for local vertical origin
-    # Use sampled road elevations as local vertical datum (avoids one extra API call).
     valid = [e for vals in by_road.values() for _, e in vals]
     center_elev = sum(valid)/len(valid) if valid else 0.0
 
     return osm, float(center_elev), f"SRTM 30m 표본 {len(coords)}개"
-
 
 def road_width_m(tags):
     highway = tags.get("highway", "")
@@ -292,23 +268,18 @@ def get_category_and_color(tags):
     leisure = tags.get("leisure", "")
     historic = tags.get("historic", "")
 
-    # 1. 음식점·카페 (주황색 #ff9800)
     if amenity in ["restaurant", "cafe", "fast_food", "pub", "bar"] or any(k in name for k in ["음식점", "식당", "카페", "커피", "맛집"]):
         return name, "#ff9800"
 
-    # 2. 편의점 (푸른색 #2196f3)
     if shop in ["convenience"] or amenity in ["convenience"] or "편의점" in name:
         return name, "#2196f3"
 
-    # 3. 백화점·쇼핑몰·시장 (빨간색 #e53935)
     if shop in ["mall", "department_store", "supermarket"] or amenity in ["marketplace"] or any(k in name for k in ["백화점", "쇼핑몰", "시장", "마트"]):
         return name, "#e53935"
 
-    # 4. 공원·산·문화재/유적지 (초록색 #4caf50)
     if leisure in ["park", "garden"] or historic != "" or tourism in ["attraction", "viewpoint"] or any(k in name for k in ["공원", "산", "문화재", "유적", "궁", "왕릉"]):
         return name, "#4caf50"
 
-    # 5. 나머지 주요 시설 (박물관, 시청, 법원, 도서관 등) -> 보라색 #9c27b0
     valid_others = ["library", "courthouse", "town_hall", "museum", "university", "college", "police", "fire_station"]
     if amenity in valid_others or tourism in ["museum", "gallery"] or any(k in name for k in ["박물관", "시청", "법원", "도서관", "구청", "주민센터"]):
         return name, "#9c27b0"
@@ -544,7 +515,80 @@ function addSceneryDetails(){
 }
 addSceneryDetails();
 
-function roadQuadSloped(a, b, width, mat, yA, yB){
+// 다른 도로와 2m 이내에 있는지 검사하는 함수 (교차로/연결부 방호벽 생략용)
+function isNearOtherRoad(x, z, currentRoadIndex) {
+  for (let rIdx = 0; rIdx < DATA.roads.length; rIdx++) {
+    if (rIdx === currentRoadIndex) continue;
+    const pts = DATA.roads[rIdx].points;
+    for (let i = 0; i < pts.length - 1; i++) {
+      if (distToSeg(x, z, pts[i], pts[i+1]) < 2.0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// 도로 하단 초록색 지지대(Skirt) 생성 함수
+function roadSkirt(a, b, width, yA, yB) {
+  const dx=b[0]-a[0], dz=b[1]-a[1], len=Math.hypot(dx,dz);
+  if(len<.05)return;
+  const nx=-dz/len, nz=dx/len, half=width/2;
+  const baseDrop = -1.2;
+
+  // 왼쪽 지지대
+  const l1 = [a[0]-nx*half, a[1]-nz*half];
+  const l2 = [b[0]-nx*half, b[1]-nz*half];
+  const vertsL = new Float32Array([
+    l1[0], yA, l1[1],  l1[0], baseDrop, l1[1],  l2[0], baseDrop, l2[1],
+    l1[0], yA, l1[1],  l2[0], baseDrop, l2[1],  l2[0], yB, l2[1]
+  ]);
+  const geoL = new THREE.BufferGeometry();
+  geoL.setAttribute("position", new THREE.BufferAttribute(vertsL, 3));
+  geoL.computeVertexNormals();
+  scene.add(new THREE.Mesh(geoL, groundMat));
+
+  // 오른쪽 지지대
+  const r1 = [a[0]+nx*half, a[1]+nz*half];
+  const r2 = [b[0]+nx*half, b[1]+nz*half];
+  const vertsR = new Float32Array([
+    r1[0], yA, r1[1],  r2[0], yB, r2[1],  r2[0], baseDrop, r2[1],
+    r1[0], yA, r1[1],  r2[0], baseDrop, r2[1],  r1[0], baseDrop, r1[1]
+  ]);
+  const geoR = new THREE.BufferGeometry();
+  geoR.setAttribute("position", new THREE.BufferAttribute(vertsR, 3));
+  geoR.computeVertexNormals();
+  scene.add(new THREE.Mesh(geoR, groundMat));
+}
+
+// 도로 가장자리 얇은 회색 방호벽 생성 함수 (2m 이내 다른 도로가 있으면 미설치)
+function addRoadBarriers(a, b, width, yA, yB, rIdx) {
+  const dx=b[0]-a[0], dz=b[1]-a[1], len=Math.hypot(dx,dz);
+  if(len<.05)return;
+  const nx=-dz/len, nz=dx/len, half=width/2;
+
+  // 왼쪽 방호벽
+  const leftMid = [(a[0]+b[0])/2 - nx*half, (a[1]+b[1])/2 - nz*half];
+  if (!isNearOtherRoad(leftMid[0], leftMid[1], rIdx) && !isNearOtherRoad(a[0], a[1], rIdx) && !isNearOtherRoad(b[0], b[1], rIdx)) {
+    const barrier = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.35, len), material(0x777b7e));
+    barrier.position.set(leftMid[0], (yA+yB)/2 + 0.175, leftMid[1]);
+    barrier.rotation.y = Math.atan2(dx, dz);
+    barrier.rotation.x = Math.atan2(yB - yA, len);
+    scene.add(barrier);
+  }
+
+  // 오른쪽 방호벽
+  const rightMid = [(a[0]+b[0])/2 + nx*half, (a[1]+b[1])/2 + nz*half];
+  if (!isNearOtherRoad(rightMid[0], rightMid[1], rIdx) && !isNearOtherRoad(a[0], a[1], rIdx) && !isNearOtherRoad(b[0], b[1], rIdx)) {
+    const barrier = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.35, len), material(0x777b7e));
+    barrier.position.set(rightMid[0], (yA+yB)/2 + 0.175, rightMid[1]);
+    barrier.rotation.y = Math.atan2(dx, dz);
+    barrier.rotation.x = Math.atan2(yB - yA, len);
+    scene.add(barrier);
+  }
+}
+
+function roadQuadSloped(a, b, width, mat, yA, yB, rIdx){
   const dx=b[0]-a[0], dz=b[1]-a[1], len=Math.hypot(dx,dz);
   if(len<.05)return;
   const nx=-dz/len, nz=dx/len, half=width/2;
@@ -561,6 +605,11 @@ function roadQuadSloped(a, b, width, mat, yA, yB){
   geo.computeVertexNormals();
   const mesh=new THREE.Mesh(geo,mat);
   scene.add(mesh);
+  
+  // 도로 하단 초록 지지대 및 방호벽 설치
+  roadSkirt(a, b, width, yA, yB);
+  addRoadBarriers(a, b, width, yA, yB, rIdx);
+
   const cx=(a[0]+b[0])/2, cz=(a[1]+b[1])/2;
   lodObjects.push({mesh,x:cx,z:cz,type:"road"});
 }
@@ -665,7 +714,8 @@ function getRoadHeightAtDist(dist, totalLen, isBridge, terrainA=0, terrainB=0, s
   }
 }
 
-for(const r of DATA.roads){
+for(let rIdx = 0; rIdx < DATA.roads.length; rIdx++){
+  const r = DATA.roads[rIdx];
   const pts=r.points;
   let totalLen = 0;
   let segLens = [];
@@ -684,7 +734,7 @@ for(const r of DATA.roads){
     const terrainB = b.length > 2 ? b[2] : 0;
     const yA = getRoadHeightAtDist(dStart, totalLen, r.bridge, terrainA, terrainB, 0);
     const yB = getRoadHeightAtDist(accum, totalLen, r.bridge, terrainA, terrainB, 1);
-    roadQuadSloped(a, b, r.width, r.bridge?bridgeMat:roadMat, yA, yB);
+    roadQuadSloped(a, b, r.width, r.bridge?bridgeMat:roadMat, yA, yB, rIdx);
   }
   addRoadMarkings(pts, r.width, r.highway, r.bridge, totalLen);
   if(r.bridge) addBridgeRails(pts, r.width, totalLen);
@@ -726,7 +776,7 @@ for(const b of DATA.buildings) {
 
 for(const w of DATA.water){
   for(let i=0;i<w.points.length-1;i++){
-    roadQuadSloped(w.points[i], w.points[i+1], 12, waterMat, 0.02, 0.02);
+    roadQuadSloped(w.points[i], w.points[i+1], 12, waterMat, 0.02, 0.02, -1);
   }
 }
 
@@ -910,7 +960,6 @@ function animate(now){
     lastLodUpdate=now;
     for(const item of lodObjects){
       const d=Math.hypot(item.x-car.position.x,item.z-car.position.z);
-      // Road meshes visible farther away than detailed buildings/trees.
       const limit=item.type==="road" ? LOD_DISTANCE*1.8 : LOD_DISTANCE;
       item.mesh.visible=d<limit;
     }

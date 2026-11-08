@@ -39,7 +39,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/41.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/42.0"},
         timeout=(5, 15)
     )
     response.raise_for_status()
@@ -76,7 +76,7 @@ def get_osm(lat, lon, radius_m):
     ]
     errors = []
     headers = {
-        "User-Agent": "Student3DDrivingSimulator/41.0",
+        "User-Agent": "Student3DDrivingSimulator/42.0",
         "Accept": "application/json",
     }
 
@@ -122,7 +122,7 @@ def query_elevation_batch(locations):
         response = requests.get(
             url,
             params={"locations": location_string, "interpolation": "bilinear"},
-            headers={"User-Agent": "Student3DDrivingSimulator/41.0"},
+            headers={"User-Agent": "Student3DDrivingSimulator/42.0"},
             timeout=20
         )
         response.raise_for_status()
@@ -329,7 +329,8 @@ def convert_osm(osm, center_lat, center_lon, base_elevation=0.0, terrain_points=
                 local_y = float(raw_elev) - float(base_elevation)
             else:
                 local_y = get_terrain_height_at(x, z)
-            points.append([x, z, local_y + 0.15])
+            # 지형과 정확히 일치하도록 미세 오프셋 제거 (0으로 밀착)
+            points.append([x, z, local_y])
 
         if "highway" in tags:
             highway = tags.get("highway", "")
@@ -494,20 +495,41 @@ const LOD_DISTANCE=Number(DATA.lod_distance||400);
 scene.background=new THREE.Color(0xb8c6d1);
 scene.fog=new THREE.Fog(0xb8c6d1,450,2600);
 const camera=new THREE.PerspectiveCamera(65,game.clientWidth/game.clientHeight,.1,12000);
-const renderer=new THREE.WebGLRenderer({antialias:false,powerPreference:"low-power"});
-renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,1.35));
+
+// 그림자 활성화를 위해 WebGLRenderer 설정 강화
+const renderer=new THREE.WebGLRenderer({antialias:true, powerPreference:"high-performance"});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,1.5));
 renderer.setSize(game.clientWidth,game.clientHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.domElement.style.position="absolute";
 renderer.domElement.style.inset="0";
 renderer.domElement.style.touchAction="none";
 game.insertBefore(renderer.domElement,game.firstChild);
 
-scene.add(new THREE.HemisphereLight(0xffffff,0x777777,2.0));
-const sun=new THREE.DirectionalLight(0xffffff,1.25);
-sun.position.set(300,500,250);scene.add(sun);
+scene.add(new THREE.HemisphereLight(0xffffff,0x555555,1.5));
+const sun=new THREE.DirectionalLight(0xffffff,1.35);
+sun.position.set(300,600,300);
+sun.castShadow = true;
+sun.shadow.mapSize.width = 2048;
+sun.shadow.mapSize.height = 2048;
+sun.shadow.camera.near = 0.5;
+sun.shadow.camera.far = 3000;
+const d = 600;
+sun.shadow.camera.left = -d;
+sun.shadow.camera.right = d;
+sun.shadow.camera.top = d;
+sun.shadow.camera.bottom = -d;
+sun.shadow.bias = -0.0005;
+scene.add(sun);
 
-// 완전한 불투명 재질 사용 (투명함 현상 완전 해결)
-const material=(color)=>new THREE.MeshLambertMaterial({color,side:THREE.DoubleSide});
+// 완전 불투명 재질 (그림자 받기/드리우기 지원)
+const material=(color, shadow=true)=>new THREE.MeshStandardMaterial({
+  color,
+  roughness: 0.85,
+  metalness: 0.05,
+  shadowSide: THREE.DoubleSide
+});
 
 const groundMat=material(0x7fa27f); 
 const roadMat=material(0x343638);
@@ -546,7 +568,7 @@ for(let i=0; i<posAttr.count; i++){
 }
 groundGeo.computeVertexNormals();
 const ground = new THREE.Mesh(groundGeo, groundMat);
-ground.renderOrder = 0;
+ground.receiveShadow = true;
 scene.add(ground);
 
 function addSceneryDetails(){
@@ -556,7 +578,8 @@ function addSceneryDetails(){
     const y = getTerrainHeightAt(rx, rz);
     const grass = new THREE.Mesh(new THREE.DodecahedronGeometry(0.8), groundMat);
     grass.position.set(rx, y, rz);
-    grass.renderOrder = 1;
+    grass.castShadow = true;
+    grass.receiveShadow = true;
     scene.add(grass);
   }
 }
@@ -589,14 +612,16 @@ function addBridgeSupports(a, b, width, yA, yB) {
     const cap = new THREE.Mesh(capGeo, pierMat);
     cap.position.set(midX, roadY - 0.25, midZ);
     cap.rotation.y = Math.atan2(dx, dz);
-    cap.renderOrder = 2;
+    cap.castShadow = true;
+    cap.receiveShadow = true;
     scene.add(cap);
 
     const pillarHeight = roadY - terrainY;
     const pillarGeo = new THREE.CylinderGeometry(0.5, 0.6, pillarHeight, 8);
     const pillar = new THREE.Mesh(pillarGeo, pierMat);
     pillar.position.set(midX, terrainY + pillarHeight / 2, midZ);
-    pillar.renderOrder = 2;
+    pillar.castShadow = true;
+    pillar.receiveShadow = true;
     scene.add(pillar);
   }
 }
@@ -613,7 +638,8 @@ function addRoadBarriers(a, b, width, yA, yB, rIdx, isBridge, isTunnel) {
     barrier.position.set(leftMid[0], (yA+yB)/2 + 0.2, leftMid[1]);
     barrier.rotation.y = Math.atan2(dx, dz);
     barrier.rotation.x = Math.atan2(yB - yA, len);
-    barrier.renderOrder = 3;
+    barrier.castShadow = true;
+    barrier.receiveShadow = true;
     scene.add(barrier);
   }
 
@@ -623,7 +649,8 @@ function addRoadBarriers(a, b, width, yA, yB, rIdx, isBridge, isTunnel) {
     barrier.position.set(rightMid[0], (yA+yB)/2 + 0.2, rightMid[1]);
     barrier.rotation.y = Math.atan2(dx, dz);
     barrier.rotation.x = Math.atan2(yB - yA, len);
-    barrier.renderOrder = 3;
+    barrier.castShadow = true;
+    barrier.receiveShadow = true;
     scene.add(barrier);
   }
 }
@@ -633,6 +660,7 @@ function addTunnelPortal(x, z, y, width, dx, dz) {
   const archGeo = new THREE.BoxGeometry(width + 1.2, 3.2, 0.8);
   const portalMesh = new THREE.Mesh(archGeo, tunnelPortalMat);
   portalMesh.position.set(0, 1.6, 0);
+  portalMesh.castShadow = true;
   portalGroup.add(portalMesh);
 
   const holeGeo = new THREE.BoxGeometry(width, 2.8, 0.9);
@@ -643,7 +671,6 @@ function addTunnelPortal(x, z, y, width, dx, dz) {
 
   portalGroup.position.set(x, y, z);
   portalGroup.rotation.y = Math.atan2(dx, dz);
-  portalGroup.renderOrder = 3;
   scene.add(portalGroup);
 }
 
@@ -664,11 +691,11 @@ function roadQuadSloped(a, b, width, mat, yA, yB, rIdx, isBridge, isTunnel){
   geo.computeVertexNormals();
   const mesh=new THREE.Mesh(geo, isTunnel ? tunnelPortalMat : mat);
   
-  // polygonOffset을 적용하여 지형과 겹쳐도 도면이 항상 최상위에 깔끔하게 표시되도록 설정
+  // 도로가 지형과 완벽하게 일치하면서도 묻히지 않도록 offset 부여
   mesh.material.polygonOffset = true;
-  mesh.material.polygonOffsetFactor = -1.0;
+  mesh.material.polygonOffsetFactor = -1.5;
   mesh.material.polygonOffsetUnits = -4.0;
-  mesh.renderOrder = 3;
+  mesh.receiveShadow = true;
   scene.add(mesh);
 
   if (isBridge) {
@@ -697,9 +724,8 @@ function lineSegmentSloped(a, b, width, color, yA, yB){
   g.computeVertexNormals();
   const mesh = new THREE.Mesh(g, color);
   mesh.material.polygonOffset = true;
-  mesh.material.polygonOffsetFactor = -2.0;
+  mesh.material.polygonOffsetFactor = -3.0;
   mesh.material.polygonOffsetUnits = -8.0;
-  mesh.renderOrder = 4;
   scene.add(mesh);
 }
 
@@ -717,8 +743,8 @@ function addRoadMarkings(points, width, highway, isBridge, isTunnel, totalLen){
       const end=Math.min(t+dashLen, len-1);
       const terrainA = a.length > 2 ? a[2] : getTerrainHeightAt(a[0], a[1]);
       const terrainB = b.length > 2 ? b[2] : getTerrainHeightAt(b[0], b[1]);
-      const yA = getRoadHeightAtDist(segStartDist + t, totalLen, isBridge, isTunnel, terrainA, terrainB, t/len) + 0.08;
-      const yB = getRoadHeightAtDist(segStartDist + end, totalLen, isBridge, isTunnel, terrainA, terrainB, end/len) + 0.08;
+      const yA = getRoadHeightAtDist(segStartDist + t, totalLen, isBridge, isTunnel, terrainA, terrainB, t/len) + 0.05;
+      const yB = getRoadHeightAtDist(segStartDist + end, totalLen, isBridge, isTunnel, terrainA, terrainB, end/len) + 0.05;
       lineSegmentSloped([a[0]+ux*t, a[1]+uz*t], [a[0]+ux*end, a[1]+uz*end], 0.15, markingMat, yA, yB);
     }
   }
@@ -735,7 +761,8 @@ function drawBuilding(points, height, cy){
   geometry.rotateX(-Math.PI/2);
   const mesh=new THREE.Mesh(geometry, buildingMat);
   mesh.position.y = cy !== undefined ? cy : 0;
-  mesh.renderOrder = 2;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
   scene.add(mesh);
 
   if(cy > 0.5) {
@@ -743,7 +770,7 @@ function drawBuilding(points, height, cy){
     baseGeometry.rotateX(-Math.PI/2);
     const baseMesh = new THREE.Mesh(baseGeometry, groundMat);
     baseMesh.position.y = 0;
-    baseMesh.renderOrder = 1;
+    baseMesh.receiveShadow = true;
     scene.add(baseMesh);
   }
 
@@ -755,9 +782,9 @@ function drawBuilding(points, height, cy){
 function addTree(x, z, y){
   const scale = 2.2;
   const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.3*scale,.4*scale,2.5*scale,6),trunkMat);
-  trunk.position.set(x, y + 1.25*scale, z); trunk.renderOrder=2; scene.add(trunk);
+  trunk.position.set(x, y + 1.25*scale, z); trunk.castShadow=true; scene.add(trunk);
   const crown=new THREE.Mesh(new THREE.ConeGeometry(1.5*scale, 3.5*scale, 6),treeMat);
-  crown.position.set(x, y + 3.2*scale, z); crown.renderOrder=2; scene.add(crown);
+  crown.position.set(x, y + 3.2*scale, z); crown.castShadow=true; scene.add(crown);
   lodObjects.push({mesh:trunk,x,z,type:"tree"},{mesh:crown,x,z,type:"tree"});
 }
 
@@ -765,12 +792,12 @@ function getRoadHeightAtDist(dist, totalLen, isBridge, isTunnel, terrainA=0, ter
   const tTerrain = segmentT===null ? (totalLen>0?Math.max(0,Math.min(1,dist/totalLen)):0) : Math.max(0,Math.min(1,segmentT));
   const terrainY = terrainA + (terrainB-terrainA) * tTerrain;
   if(isTunnel) return terrainY - 0.5;
-  if(!isBridge || totalLen <= 0) return terrainY + 0.1;
+  if(!isBridge || totalLen <= 0) return terrainY; // 지형 고도와 완전히 1:1 밀착
   const rampLen = Math.min(15, totalLen * 0.25);
   if(dist < rampLen){
-    return terrainY + 0.1 + (1.8 - 0.1) * (dist / rampLen);
+    return terrainY + (1.8 * (dist / rampLen));
   } else if(dist > totalLen - rampLen){
-    return terrainY + 0.1 + (1.8 - 0.1) * ((totalLen - dist) / rampLen);
+    return terrainY + (1.8 * ((totalLen - dist) / rampLen));
   } else {
     return terrainY + 1.8;
   }
@@ -843,19 +870,19 @@ for(const b of DATA.buildings) {
 const car=new THREE.Group();scene.add(car);
 const carPaint=material(0xb83b3b),glass=material(0x5e747e),tireMat=material(0x202020),rimMat=material(0x96999b);
 const body=new THREE.Mesh(new THREE.BoxGeometry(1.82,.62,4.45),carPaint);
-body.position.y=.68; body.renderOrder=5; car.add(body);
+body.position.y=.68; body.castShadow=true; car.add(body);
 const hood=new THREE.Mesh(new THREE.BoxGeometry(1.72,.22,1.0),carPaint);
-hood.position.set(0,.98,1.35); hood.renderOrder=5; car.add(hood);
+hood.position.set(0,.98,1.35); hood.castShadow=true; car.add(hood);
 const cabin=new THREE.Mesh(new THREE.BoxGeometry(1.48,.62,1.85),glass);
-cabin.position.set(0,1.22,-.35); cabin.renderOrder=5; car.add(cabin);
+cabin.position.set(0,1.22,-.35); cabin.castShadow=true; car.add(cabin);
 const roof=new THREE.Mesh(new THREE.BoxGeometry(1.35,.12,1.25),carPaint);
-roof.position.set(0,1.57,-.35); roof.renderOrder=5; car.add(roof);
+roof.position.set(0,1.57,-.35); roof.castShadow=true; car.add(roof);
 const wheels=[];
 for(const x of [-.94,.94])for(const z of [-1.42,1.42]){
   const wheel=new THREE.Mesh(new THREE.CylinderGeometry(.34,.34,.22,12),tireMat);
-  wheel.rotation.z=Math.PI/2; wheel.position.set(x,.36,z); wheel.renderOrder=5; car.add(wheel); wheels.push(wheel);
+  wheel.rotation.z=Math.PI/2; wheel.position.set(x,.36,z); wheel.castShadow=true; car.add(wheel); wheels.push(wheel);
   const rim=new THREE.Mesh(new THREE.CylinderGeometry(.19,.19,.235,10),rimMat);
-  rim.rotation.z=Math.PI/2; rim.position.set(x,.36,z); rim.renderOrder=5; car.add(rim);
+  rim.rotation.z=Math.PI/2; rim.position.set(x,.36,z); car.add(rim);
 }
 
 function pointInPolygon(x,z,poly){
@@ -895,7 +922,7 @@ function buildingCollision(x,z,yaw){
 }
 
 function getCarHeight(x, z){
-  let bestDist=Infinity, bestHeight=getTerrainHeightAt(x, z)+0.1;
+  let bestDist=Infinity, bestHeight=getTerrainHeightAt(x, z);
   for(const r of DATA.roads){
     const pts=r.points;
     let totalLen=0, segLengths=[];
@@ -915,7 +942,7 @@ function getCarHeight(x, z){
         const terrain=terrainA+(terrainB-terrainA)*t;
         const bridgeExtra=r.bridge?getRoadHeightAtDist(accum+t*len,totalLen,true,r.tunnel,terrainA,terrainB,t)-terrain:0;
         const tunnelExtra=r.tunnel?getRoadHeightAtDist(accum+t*len,totalLen,false,r.tunnel,terrainA,terrainB,t)-terrain:0;
-        bestHeight=terrain+bridgeExtra+tunnelExtra+0.1;
+        bestHeight=terrain+bridgeExtra+tunnelExtra;
         bestDist=d;
       }
       accum+=len;

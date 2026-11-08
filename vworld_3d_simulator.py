@@ -39,7 +39,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/32.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/33.0"},
         timeout=(5, 15)
     )
     response.raise_for_status()
@@ -55,7 +55,6 @@ def get_osm(lat, lon, radius_m):
     dlon = radius_m / (111320 * max(math.cos(math.radians(lat)), 0.2))
     south, west, north, east = lat-dlat, lon-dlon, lat+dlat, lon+dlat
 
-    # 타임아웃을 줄이고 필수 태그만 빠르게 조회하도록 쿼리 최적화
     query = f"""
     [out:json][timeout:20][maxsize:268435456];
     (
@@ -77,7 +76,7 @@ def get_osm(lat, lon, radius_m):
     ]
     errors = []
     headers = {
-        "User-Agent": "Student3DDrivingSimulator/32.0",
+        "User-Agent": "Student3DDrivingSimulator/33.0",
         "Accept": "application/json",
     }
 
@@ -107,7 +106,7 @@ def get_osm(lat, lon, radius_m):
 
     detail = " / ".join(errors[-3:])
     raise RuntimeError(
-        "OSM 서버 응답 시간이 초과되었습니다. 지도 범위 반경을 작게(예: 300m~400m) 설정 후 다시 시도해 주세요. "
+        "OSM 서버 응답 시간이 초과되었습니다. 지도 범위 반경을 작게 설정 후 다시 시도해 주세요. "
         f"시도 결과: {detail}"
     )
 
@@ -123,7 +122,7 @@ def query_elevation_batch(locations):
         response = requests.get(
             url,
             params={"locations": location_string, "interpolation": "bilinear"},
-            headers={"User-Agent": "Student3DDrivingSimulator/32.0"},
+            headers={"User-Agent": "Student3DDrivingSimulator/33.0"},
             timeout=20
         )
         response.raise_for_status()
@@ -478,31 +477,14 @@ const bridgeMat=material(0x42464a);
 const markingMat=material(0xd8d6c9);
 const treeMat=material(0x3e5e3b); 
 const trunkMat=material(0x5c4938);
-const grassMat=material(0x668f63);
-
-// 건물 초기 모형: 깔끔한 회색 단색 재질 적용
 const buildingMat = material(0x9098a0);
 
-let avgTerrainY = 0;
-let terrainCount = 0;
-for(const r of DATA.roads){
-  for(const p of r.points){
-    if(p.length > 2){ avgTerrainY += p[2]; terrainCount++; }
-  }
-}
-if(terrainCount > 0) avgTerrainY /= terrainCount;
-
-const ground=new THREE.Mesh(new THREE.PlaneGeometry(20000,20000),groundMat);
-ground.rotation.x=-Math.PI/2;
-ground.position.y = avgTerrainY - 0.35;
-scene.add(ground);
-
 function addSceneryDetails(){
-  for(let i=0; i<100; i++){
-    let rx = (Math.random() - 0.5) * 1000;
-    let rz = (Math.random() - 0.5) * 1000;
-    const grass = new THREE.Mesh(new THREE.DodecahedronGeometry(0.8), grassMat);
-    grass.position.set(rx, avgTerrainY, rz);
+  for(let i=0; i<80; i++){
+    let rx = (Math.random() - 0.5) * 800;
+    let rz = (Math.random() - 0.5) * 800;
+    const grass = new THREE.Mesh(new THREE.DodecahedronGeometry(0.8), groundMat);
+    grass.position.set(rx, 0, rz);
     scene.add(grass);
   }
 }
@@ -521,33 +503,48 @@ function isNearOtherRoad(x, z, currentRoadIndex) {
   return false;
 }
 
-function roadSkirt(a, b, width, yA, yB) {
+// 각 도로 세그먼트마다 고도(yA, yB)에 맞춘 로컬 초록색 지형 및 지지대 생성 (단일 대지 판 제거)
+function roadLocalGroundAndSkirt(a, b, width, yA, yB) {
   const dx=b[0]-a[0], dz=b[1]-a[1], len=Math.hypot(dx,dz);
   if(len<.05)return;
-  const nx=-dz/len, nz=dx/len, half=width/2;
-  const baseDrop = avgTerrainY - 1.5;
+  const nx=-dz/len, nz=dx/len;
+  const shoulderWidth = width + 10.0; // 도로 양옆의 초록색 로컬 지형 폭
+  const halfS = shoulderWidth / 2;
+  const baseDrop = Math.min(yA, yB) - 3.0;
 
-  const l1 = [a[0]-nx*half, a[1]-nz*half];
-  const l2 = [b[0]-nx*half, b[1]-nz*half];
-  const vertsL = new Float32Array([
+  // 로컬 지형 상판 (도로 양옆의 초록색 대지)
+  const l1 = [a[0]-nx*halfS, a[1]-nz*halfS];
+  const l2 = [b[0]-nx*halfS, b[1]-nz*halfS];
+  const r1 = [a[0]+nx*halfS, a[1]+nz*halfS];
+  const r2 = [b[0]+nx*halfS, b[1]+nz*halfS];
+
+  const vertsTop = new Float32Array([
+    l1[0], yA, l1[1],  r1[0], yA, r1[1],  r2[0], yB, r2[1],
+    l1[0], yA, l1[1],  r2[0], yB, r2[1],  l2[0], yB, l2[1]
+  ]);
+  const geoTop = new THREE.BufferGeometry();
+  geoTop.setAttribute("position", new THREE.BufferAttribute(vertsTop, 3));
+  geoTop.computeVertexNormals();
+  scene.add(new THREE.Mesh(geoTop, groundMat));
+
+  // 지지대(Skirt) - 바닥 아래로 자연스럽게 연결
+  const vertsSkirtL = new Float32Array([
     l1[0], yA, l1[1],  l1[0], baseDrop, l1[1],  l2[0], baseDrop, l2[1],
     l1[0], yA, l1[1],  l2[0], baseDrop, l2[1],  l2[0], yB, l2[1]
   ]);
-  const geoL = new THREE.BufferGeometry();
-  geoL.setAttribute("position", new THREE.BufferAttribute(vertsL, 3));
-  geoL.computeVertexNormals();
-  scene.add(new THREE.Mesh(geoL, groundMat));
+  const geoSkirtL = new THREE.BufferGeometry();
+  geoSkirtL.setAttribute("position", new THREE.BufferAttribute(vertsSkirtL, 3));
+  geoSkirtL.computeVertexNormals();
+  scene.add(new THREE.Mesh(geoSkirtL, groundMat));
 
-  const r1 = [a[0]+nx*half, a[1]+nz*half];
-  const r2 = [b[0]+nx*half, b[1]+nz*half];
-  const vertsR = new Float32Array([
+  const vertsSkirtR = new Float32Array([
     r1[0], yA, r1[1],  r2[0], yB, r2[1],  r2[0], baseDrop, r2[1],
     r1[0], yA, r1[1],  r2[0], baseDrop, r2[1],  r1[0], baseDrop, r1[1]
   ]);
-  const geoR = new THREE.BufferGeometry();
-  geoR.setAttribute("position", new THREE.BufferAttribute(vertsR, 3));
-  geoR.computeVertexNormals();
-  scene.add(new THREE.Mesh(geoR, groundMat));
+  const geoSkirtR = new THREE.BufferGeometry();
+  geoSkirtR.setAttribute("position", new THREE.BufferAttribute(vertsSkirtR, 3));
+  geoSkirtR.computeVertexNormals();
+  scene.add(new THREE.Mesh(geoSkirtR, groundMat));
 }
 
 function addRoadBarriers(a, b, width, yA, yB, rIdx) {
@@ -592,7 +589,7 @@ function roadQuadSloped(a, b, width, mat, yA, yB, rIdx){
   const mesh=new THREE.Mesh(geo,mat);
   scene.add(mesh);
   
-  roadSkirt(a, b, width, yA, yB);
+  roadLocalGroundAndSkirt(a, b, width, yA, yB);
   addRoadBarriers(a, b, width, yA, yB, rIdx);
 
   const cx=(a[0]+b[0])/2, cz=(a[1]+b[1])/2;
@@ -814,7 +811,7 @@ function buildingCollision(x,z,yaw){
 }
 
 function getCarHeight(x, z){
-  let bestDist=Infinity, bestHeight=avgTerrainY+0.035;
+  let bestDist=Infinity, bestHeight=0.035;
   for(const r of DATA.roads){
     const pts=r.points;
     let totalLen=0, segLengths=[];

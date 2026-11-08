@@ -24,8 +24,8 @@ with st.sidebar:
 
     radius = st.select_slider(
         "지도 범위 반경",
-        options=[400, 600, 800, 1000, 1500],
-        value=800,
+        options=[300, 400, 600, 800, 1000, 1500],
+        value=600,
         format_func=lambda x: f"{x} m"
     )
     use_elevation = st.checkbox("SRTM 실제 지형 고도 적용 (30m급)", value=True)
@@ -39,8 +39,8 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/27.0"},
-        timeout=25
+        headers={"User-Agent": "Student3DDrivingSimulator/29.0 (educational project)"},
+        timeout=(5, 15)
     )
     response.raise_for_status()
     items = response.json()
@@ -49,14 +49,21 @@ def geocode(q):
     item = items[0]
     return float(item["lat"]), float(item["lon"]), item.get("display_name", q)
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=21600, show_spinner=False)
 def get_osm(lat, lon, radius_m):
+    """
+    OSM 데이터를 가져온다.
+    - 위도/경도 경계 계산을 분리해 동서 범위 오류를 방지
+    - 공개 Overpass 서버 여러 곳을 순차적으로 시도
+    - 각 서버 응답 대기 시간을 제한해 2분 이상 멈추는 현상을 줄임
+    """
     dlat = radius_m / 111320
     dlon = radius_m / (111320 * max(math.cos(math.radians(lat)), 0.2))
-    south, west, north, east = lat-dlat, lon-dlon, lat+dlat, lon+dlat
+    south, west, north, east = lat-dlat, lon-dlon, lat+dlat, lon+dlon
 
+    # [timeout]은 Overpass 서버 내부 쿼리 제한, requests timeout은 HTTP 응답 대기 제한이다.
     query = f"""
-    [out:json][timeout:90];
+    [out:json][timeout:25][maxsize:536870912];
     (
       way["highway"~"motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link"]({south},{west},{north},{east});
       way["building"]({south},{west},{north},{east});
@@ -70,22 +77,48 @@ def get_osm(lat, lon, radius_m):
     );
     out body geom;
     """
-    last_error = None
-    for endpoint in [
+
+    # Kumi는 Private.coffee가 운영하는 인스턴스로 이전되었으므로 새 주소를 사용한다.
+    endpoints = [
+        "https://overpass.private.coffee/api/interpreter",
+        "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
         "https://overpass-api.de/api/interpreter",
-        "https://overpass.kumi.systems/api/interpreter"
-    ]:
+    ]
+    errors = []
+    headers = {
+        "User-Agent": "Student3DDrivingSimulator/29.0 (educational project)",
+        "Accept": "application/json",
+    }
+
+    for endpoint in endpoints:
         try:
             response = requests.post(
-                endpoint, data=query,
-                headers={"User-Agent": "Student3DDrivingSimulator/27.0"},
-                timeout=110
+                endpoint,
+                data={"data": query},
+                headers=headers,
+                timeout=(6, 28),  # 연결 6초, 응답 대기 28초
             )
+            if response.status_code in (429, 502, 503, 504):
+                errors.append(f"{endpoint.split('/')[2]}: HTTP {response.status_code}")
+                continue
             response.raise_for_status()
-            return response.json()
-        except Exception as exc:
-            last_error = exc
-    raise RuntimeError(f"OSM 지도 요청 실패: {last_error}")
+            payload = response.json()
+            if not isinstance(payload, dict) or "elements" not in payload:
+                errors.append(f"{endpoint.split('/')[2]}: 응답 데이터 형식 오류")
+                continue
+            return payload
+        except requests.exceptions.Timeout:
+            errors.append(f"{endpoint.split('/')[2]}: 응답 시간 초과")
+        except requests.exceptions.RequestException as exc:
+            errors.append(f"{endpoint.split('/')[2]}: {type(exc).__name__}")
+        except ValueError:
+            errors.append(f"{endpoint.split('/')[2]}: JSON 응답 오류")
+
+    detail = " / ".join(errors[-3:])
+    raise RuntimeError(
+        "OSM 서버들이 응답하지 않았습니다. 잠시 후 반경을 줄여 다시 시도해 주세요. "
+        f"시도 결과: {detail}"
+    )
 
 
 
@@ -116,7 +149,7 @@ def query_elevation_batch(locations):
     return results
 
 
-def add_terrain_elevation(osm, center_lat, center_lon, max_samples=350):
+def add_terrain_elevation(osm, center_lat, center_lon, max_samples=200):
     """
     도로를 따라 고도 표본을 최대 max_samples개 추출하고 SRTM 30m 고도를
     도로 노드에 보간한다. DEM은 약 30m 격자이므로 작은 언덕/도로 경사로는
@@ -168,8 +201,9 @@ def add_terrain_elevation(osm, center_lat, center_lon, max_samples=350):
         sample_records.append((road_idx, cum, g[-1]["lat"], g[-1]["lon"]))
 
     # Hard cap safeguards against huge maps
-    if len(sample_records) > max_samples + len(road_elements):
-        sample_records = sample_records[::max(1, math.ceil(len(sample_records)/(max_samples+len(road_elements))))]
+    if len(sample_records) > max_samples:
+        stride = max(1, math.ceil(len(sample_records) / max_samples))
+        sample_records = sample_records[::stride]
 
     coords = [(rec[2], rec[3]) for rec in sample_records]
     elevations = query_elevation_batch(coords)

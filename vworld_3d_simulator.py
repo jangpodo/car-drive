@@ -39,7 +39,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/42.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/43.0"},
         timeout=(5, 15)
     )
     response.raise_for_status()
@@ -76,7 +76,7 @@ def get_osm(lat, lon, radius_m):
     ]
     errors = []
     headers = {
-        "User-Agent": "Student3DDrivingSimulator/42.0",
+        "User-Agent": "Student3DDrivingSimulator/43.0",
         "Accept": "application/json",
     }
 
@@ -122,7 +122,7 @@ def query_elevation_batch(locations):
         response = requests.get(
             url,
             params={"locations": location_string, "interpolation": "bilinear"},
-            headers={"User-Agent": "Student3DDrivingSimulator/42.0"},
+            headers={"User-Agent": "Student3DDrivingSimulator/43.0"},
             timeout=20
         )
         response.raise_for_status()
@@ -329,7 +329,6 @@ def convert_osm(osm, center_lat, center_lon, base_elevation=0.0, terrain_points=
                 local_y = float(raw_elev) - float(base_elevation)
             else:
                 local_y = get_terrain_height_at(x, z)
-            # 지형과 정확히 일치하도록 미세 오프셋 제거 (0으로 밀착)
             points.append([x, z, local_y])
 
         if "highway" in tags:
@@ -496,7 +495,6 @@ scene.background=new THREE.Color(0xb8c6d1);
 scene.fog=new THREE.Fog(0xb8c6d1,450,2600);
 const camera=new THREE.PerspectiveCamera(65,game.clientWidth/game.clientHeight,.1,12000);
 
-// 그림자 활성화를 위해 WebGLRenderer 설정 강화
 const renderer=new THREE.WebGLRenderer({antialias:true, powerPreference:"high-performance"});
 renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,1.5));
 renderer.setSize(game.clientWidth,game.clientHeight);
@@ -523,12 +521,11 @@ sun.shadow.camera.bottom = -d;
 sun.shadow.bias = -0.0005;
 scene.add(sun);
 
-// 완전 불투명 재질 (그림자 받기/드리우기 지원)
-const material=(color, shadow=true)=>new THREE.MeshStandardMaterial({
+const material=(color)=>new THREE.MeshStandardMaterial({
   color,
   roughness: 0.85,
   metalness: 0.05,
-  shadowSide: THREE.DoubleSide
+  side: THREE.DoubleSide
 });
 
 const groundMat=material(0x7fa27f); 
@@ -691,10 +688,6 @@ function roadQuadSloped(a, b, width, mat, yA, yB, rIdx, isBridge, isTunnel){
   geo.computeVertexNormals();
   const mesh=new THREE.Mesh(geo, isTunnel ? tunnelPortalMat : mat);
   
-  // 도로가 지형과 완벽하게 일치하면서도 묻히지 않도록 offset 부여
-  mesh.material.polygonOffset = true;
-  mesh.material.polygonOffsetFactor = -1.5;
-  mesh.material.polygonOffsetUnits = -4.0;
   mesh.receiveShadow = true;
   scene.add(mesh);
 
@@ -723,9 +716,6 @@ function lineSegmentSloped(a, b, width, color, yA, yB){
   g.setAttribute("position",new THREE.BufferAttribute(v,3));
   g.computeVertexNormals();
   const mesh = new THREE.Mesh(g, color);
-  mesh.material.polygonOffset = true;
-  mesh.material.polygonOffsetFactor = -3.0;
-  mesh.material.polygonOffsetUnits = -8.0;
   scene.add(mesh);
 }
 
@@ -792,12 +782,12 @@ function getRoadHeightAtDist(dist, totalLen, isBridge, isTunnel, terrainA=0, ter
   const tTerrain = segmentT===null ? (totalLen>0?Math.max(0,Math.min(1,dist/totalLen)):0) : Math.max(0,Math.min(1,segmentT));
   const terrainY = terrainA + (terrainB-terrainA) * tTerrain;
   if(isTunnel) return terrainY - 0.5;
-  if(!isBridge || totalLen <= 0) return terrainY; // 지형 고도와 완전히 1:1 밀착
+  if(!isBridge || totalLen <= 0) return terrainY + 0.15; // 지형 바닥보다 확실하게 0.15m 높여 묻힘 현상 완벽 방지
   const rampLen = Math.min(15, totalLen * 0.25);
   if(dist < rampLen){
-    return terrainY + (1.8 * (dist / rampLen));
+    return terrainY + 0.15 + (1.8 * (dist / rampLen));
   } else if(dist > totalLen - rampLen){
-    return terrainY + (1.8 * ((totalLen - dist) / rampLen));
+    return terrainY + 0.15 + (1.8 * ((totalLen - dist) / rampLen));
   } else {
     return terrainY + 1.8;
   }
@@ -922,7 +912,7 @@ function buildingCollision(x,z,yaw){
 }
 
 function getCarHeight(x, z){
-  let bestDist=Infinity, bestHeight=getTerrainHeightAt(x, z);
+  let bestDist=Infinity, bestHeight=getTerrainHeightAt(x, z) + 0.15;
   for(const r of DATA.roads){
     const pts=r.points;
     let totalLen=0, segLengths=[];
@@ -942,7 +932,7 @@ function getCarHeight(x, z){
         const terrain=terrainA+(terrainB-terrainA)*t;
         const bridgeExtra=r.bridge?getRoadHeightAtDist(accum+t*len,totalLen,true,r.tunnel,terrainA,terrainB,t)-terrain:0;
         const tunnelExtra=r.tunnel?getRoadHeightAtDist(accum+t*len,totalLen,false,r.tunnel,terrainA,terrainB,t)-terrain:0;
-        bestHeight=terrain+bridgeExtra+tunnelExtra;
+        bestHeight=terrain+bridgeExtra+tunnelExtra+0.15;
         bestDist=d;
       }
       accum+=len;

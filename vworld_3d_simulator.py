@@ -39,7 +39,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/43.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/44.0"},
         timeout=(5, 15)
     )
     response.raise_for_status()
@@ -76,7 +76,7 @@ def get_osm(lat, lon, radius_m):
     ]
     errors = []
     headers = {
-        "User-Agent": "Student3DDrivingSimulator/43.0",
+        "User-Agent": "Student3DDrivingSimulator/44.0",
         "Accept": "application/json",
     }
 
@@ -122,7 +122,7 @@ def query_elevation_batch(locations):
         response = requests.get(
             url,
             params={"locations": location_string, "interpolation": "bilinear"},
-            headers={"User-Agent": "Student3DDrivingSimulator/43.0"},
+            headers={"User-Agent": "Student3DDrivingSimulator/44.0"},
             timeout=20
         )
         response.raise_for_status()
@@ -329,6 +329,7 @@ def convert_osm(osm, center_lat, center_lon, base_elevation=0.0, terrain_points=
                 local_y = float(raw_elev) - float(base_elevation)
             else:
                 local_y = get_terrain_height_at(x, z)
+            # 지형 바닥과 동일하게 -0.35 맞춤
             points.append([x, z, local_y])
 
         if "highway" in tags:
@@ -555,6 +556,7 @@ function getTerrainHeightAt(x, z){
   return totalW > 0 ? sumH / totalW : 0.0;
 }
 
+// 지형 바닥 높이를 -0.35로 설정
 const groundGeo = new THREE.PlaneGeometry(3500, 3500, 70, 70);
 groundGeo.rotateX(-Math.PI / 2);
 const posAttr = groundGeo.attributes.position;
@@ -572,7 +574,7 @@ function addSceneryDetails(){
   for(let i=0; i<80; i++){
     let rx = (Math.random() - 0.5) * 1000;
     let rz = (Math.random() - 0.5) * 1000;
-    const y = getTerrainHeightAt(rx, rz);
+    const y = getTerrainHeightAt(rx, rz) - 0.35 + 0.01;
     const grass = new THREE.Mesh(new THREE.DodecahedronGeometry(0.8), groundMat);
     grass.position.set(rx, y, rz);
     grass.castShadow = true;
@@ -602,7 +604,7 @@ function addBridgeSupports(a, b, width, yA, yB) {
   const midX = (a[0] + b[0]) / 2;
   const midZ = (a[1] + b[1]) / 2;
   const roadY = (yA + yB) / 2;
-  const terrainY = getTerrainHeightAt(midX, midZ);
+  const terrainY = getTerrainHeightAt(midX, midZ) - 0.35;
 
   if (roadY - terrainY > 1.2) {
     const capGeo = new THREE.BoxGeometry(width + 0.4, 0.4, 1.2);
@@ -687,7 +689,6 @@ function roadQuadSloped(a, b, width, mat, yA, yB, rIdx, isBridge, isTunnel){
   geo.setAttribute("position",new THREE.BufferAttribute(vertices,3));
   geo.computeVertexNormals();
   const mesh=new THREE.Mesh(geo, isTunnel ? tunnelPortalMat : mat);
-  
   mesh.receiveShadow = true;
   scene.add(mesh);
 
@@ -733,8 +734,8 @@ function addRoadMarkings(points, width, highway, isBridge, isTunnel, totalLen){
       const end=Math.min(t+dashLen, len-1);
       const terrainA = a.length > 2 ? a[2] : getTerrainHeightAt(a[0], a[1]);
       const terrainB = b.length > 2 ? b[2] : getTerrainHeightAt(b[0], b[1]);
-      const yA = getRoadHeightAtDist(segStartDist + t, totalLen, isBridge, isTunnel, terrainA, terrainB, t/len) + 0.05;
-      const yB = getRoadHeightAtDist(segStartDist + end, totalLen, isBridge, isTunnel, terrainA, terrainB, end/len) + 0.05;
+      const yA = getRoadHeightAtDist(segStartDist + t, totalLen, isBridge, isTunnel, terrainA, terrainB, t/len) + 0.02;
+      const yB = getRoadHeightAtDist(segStartDist + end, totalLen, isBridge, isTunnel, terrainA, terrainB, end/len) + 0.02;
       lineSegmentSloped([a[0]+ux*t, a[1]+uz*t], [a[0]+ux*end, a[1]+uz*end], 0.15, markingMat, yA, yB);
     }
   }
@@ -750,19 +751,10 @@ function drawBuilding(points, height, cy){
   const geometry=new THREE.ExtrudeGeometry(shape,{depth:height,bevelEnabled:false});
   geometry.rotateX(-Math.PI/2);
   const mesh=new THREE.Mesh(geometry, buildingMat);
-  mesh.position.y = cy !== undefined ? cy : 0;
+  mesh.position.y = (cy !== undefined ? cy : 0) - 0.35;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   scene.add(mesh);
-
-  if(cy > 0.5) {
-    const baseGeometry = new THREE.ExtrudeGeometry(shape, {depth: cy, bevelEnabled: false});
-    baseGeometry.rotateX(-Math.PI/2);
-    const baseMesh = new THREE.Mesh(baseGeometry, groundMat);
-    baseMesh.position.y = 0;
-    baseMesh.receiveShadow = true;
-    scene.add(baseMesh);
-  }
 
   const cx=points.reduce((s,p)=>s+p[0],0)/points.length;
   const cz=points.reduce((s,p)=>s+p[1],0)/points.length;
@@ -778,18 +770,20 @@ function addTree(x, z, y){
   lodObjects.push({mesh:trunk,x,z,type:"tree"},{mesh:crown,x,z,type:"tree"});
 }
 
+// 도로 높이: 지형 바닥(terrainY - 0.35)보다 정확히 0.01m 위로 설정
 function getRoadHeightAtDist(dist, totalLen, isBridge, isTunnel, terrainA=0, terrainB=0, segmentT=null){
   const tTerrain = segmentT===null ? (totalLen>0?Math.max(0,Math.min(1,dist/totalLen)):0) : Math.max(0,Math.min(1,segmentT));
-  const terrainY = terrainA + (terrainB-terrainA) * tTerrain;
-  if(isTunnel) return terrainY - 0.5;
-  if(!isBridge || totalLen <= 0) return terrainY + 0.15; // 지형 바닥보다 확실하게 0.15m 높여 묻힘 현상 완벽 방지
+  const rawTerrainY = terrainA + (terrainB-terrainA) * tTerrain;
+  const greenFloorY = rawTerrainY - 0.35;
+  if(isTunnel) return greenFloorY - 0.5;
+  if(!isBridge || totalLen <= 0) return greenFloorY + 0.01; // 바닥보다 딱 0.01m 위
   const rampLen = Math.min(15, totalLen * 0.25);
   if(dist < rampLen){
-    return terrainY + 0.15 + (1.8 * (dist / rampLen));
+    return greenFloorY + 0.01 + (1.8 * (dist / rampLen));
   } else if(dist > totalLen - rampLen){
-    return terrainY + 0.15 + (1.8 * ((totalLen - dist) / rampLen));
+    return greenFloorY + 0.01 + (1.8 * ((totalLen - dist) / rampLen));
   } else {
-    return terrainY + 1.8;
+    return greenFloorY + 0.01 + 1.8;
   }
 }
 
@@ -816,8 +810,8 @@ for(let rIdx = 0; rIdx < DATA.roads.length; rIdx++){
     roadQuadSloped(a, b, r.width, r.bridge?bridgeMat:roadMat, yA, yB, rIdx, r.bridge, r.tunnel);
 
     if(r.tunnel) {
-      if(i === 0) addTunnelPortal(a[0], a[1], terrainA, r.width, b[0]-a[0], b[1]-a[1]);
-      if(i === pts.length - 2) addTunnelPortal(b[0], b[1], terrainB, r.width, a[0]-b[0], a[1]-b[1]);
+      if(i === 0) addTunnelPortal(a[0], a[1], terrainA - 0.35, r.width, b[0]-a[0], b[1]-a[1]);
+      if(i === pts.length - 2) addTunnelPortal(b[0], b[1], terrainB - 0.35, r.width, a[0]-b[0], a[1]-b[1]);
     }
   }
   addRoadMarkings(pts, r.width, r.highway, r.bridge, r.tunnel, totalLen);
@@ -829,7 +823,7 @@ for(let rIdx = 0; rIdx < DATA.roads.length; rIdx++){
       const nx=-dz/len,nz=dx/len;
       for(let t=35;t<len;t+=90){
         const x=a[0]+dx*t/len,z=a[1]+dz*t/len,off=r.width/2+5.0;
-        const treeY = getTerrainHeightAt(x+nx*off, z+nz*off);
+        const treeY = getTerrainHeightAt(x+nx*off, z+nz*off) - 0.35;
         addTree(x+nx*off, z+nz*off, treeY);
       }
     }
@@ -852,7 +846,7 @@ for(const b of DATA.buildings) {
     markersContainer.appendChild(el);
     landmarkMarkers.push({
       element: el,
-      position: new THREE.Vector3(b.cx, (b.cy || 0) + (b.height || 10) + 1.5, b.cz)
+      position: new THREE.Vector3(b.cx, (b.cy || 0) - 0.35 + (b.height || 10) + 1.5, b.cz)
     });
   }
 }
@@ -870,9 +864,9 @@ roof.position.set(0,1.57,-.35); roof.castShadow=true; car.add(roof);
 const wheels=[];
 for(const x of [-.94,.94])for(const z of [-1.42,1.42]){
   const wheel=new THREE.Mesh(new THREE.CylinderGeometry(.34,.34,.22,12),tireMat);
-  wheel.rotation.z=Math.PI/2; wheel.position.set(x,.36,z); wheel.castShadow=true; car.add(wheel); wheels.push(wheel);
+  wheel.rotation.z=Math.PI/2; wheel.position.set(x,.34,z); wheel.castShadow=true; car.add(wheel); wheels.push(wheel);
   const rim=new THREE.Mesh(new THREE.CylinderGeometry(.19,.19,.235,10),rimMat);
-  rim.rotation.z=Math.PI/2; rim.position.set(x,.36,z); car.add(rim);
+  rim.rotation.z=Math.PI/2; rim.position.set(x,.34,z); car.add(rim);
 }
 
 function pointInPolygon(x,z,poly){
@@ -912,7 +906,7 @@ function buildingCollision(x,z,yaw){
 }
 
 function getCarHeight(x, z){
-  let bestDist=Infinity, bestHeight=getTerrainHeightAt(x, z) + 0.15;
+  let bestDist=Infinity, bestHeight=getTerrainHeightAt(x, z) - 0.35 + 0.01;
   for(const r of DATA.roads){
     const pts=r.points;
     let totalLen=0, segLengths=[];
@@ -929,10 +923,10 @@ function getCarHeight(x, z){
         const vx=b[0]-a[0], vz=b[1]-a[1], l2=vx*vx+vz*vz;
         const t=l2?Math.max(0,Math.min(1,((x-a[0])*vx+(z-a[1])*vz)/l2)):0;
         const terrainA=a.length>2?a[2]:getTerrainHeightAt(a[0],a[1]), terrainB=b.length>2?b[2]:getTerrainHeightAt(b[0],b[1]);
-        const terrain=terrainA+(terrainB-terrainA)*t;
-        const bridgeExtra=r.bridge?getRoadHeightAtDist(accum+t*len,totalLen,true,r.tunnel,terrainA,terrainB,t)-terrain:0;
-        const tunnelExtra=r.tunnel?getRoadHeightAtDist(accum+t*len,totalLen,false,r.tunnel,terrainA,terrainB,t)-terrain:0;
-        bestHeight=terrain+bridgeExtra+tunnelExtra+0.15;
+        const bridgeExtra=r.bridge?getRoadHeightAtDist(accum+t*len,totalLen,true,r.tunnel,terrainA,terrainB,t)-(terrainA-0.35):0;
+        const tunnelExtra=r.tunnel?getRoadHeightAtDist(accum+t*len,totalLen,false,r.tunnel,terrainA,terrainB,t)-(terrainA-0.35):0;
+        const rawT = terrainA + (terrainB-terrainA)*t;
+        bestHeight=(rawT - 0.35) + (r.bridge ? bridgeExtra : (r.tunnel ? tunnelExtra : 0.01));
         bestDist=d;
       }
       accum+=len;

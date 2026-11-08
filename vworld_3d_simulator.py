@@ -39,7 +39,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/40.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/41.0"},
         timeout=(5, 15)
     )
     response.raise_for_status()
@@ -76,7 +76,7 @@ def get_osm(lat, lon, radius_m):
     ]
     errors = []
     headers = {
-        "User-Agent": "Student3DDrivingSimulator/40.0",
+        "User-Agent": "Student3DDrivingSimulator/41.0",
         "Accept": "application/json",
     }
 
@@ -122,7 +122,7 @@ def query_elevation_batch(locations):
         response = requests.get(
             url,
             params={"locations": location_string, "interpolation": "bilinear"},
-            headers={"User-Agent": "Student3DDrivingSimulator/40.0"},
+            headers={"User-Agent": "Student3DDrivingSimulator/41.0"},
             timeout=20
         )
         response.raise_for_status()
@@ -329,7 +329,7 @@ def convert_osm(osm, center_lat, center_lon, base_elevation=0.0, terrain_points=
                 local_y = float(raw_elev) - float(base_elevation)
             else:
                 local_y = get_terrain_height_at(x, z)
-            points.append([x, z, local_y + 0.1])
+            points.append([x, z, local_y + 0.15])
 
         if "highway" in tags:
             highway = tags.get("highway", "")
@@ -474,7 +474,7 @@ button{font-size:18px;padding:12px 16px;background:#26313b;color:white;border:0;
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script>
 </head><body><div id="game">
 <div id="hud">속도: <span id="speed">0</span> km/h<br><span id="status">준비 중</span><br><span id="cameraLabel">카메라: 3인칭 추적</span></div>
-<div id="help">W/S 또는 ↑/↓: 가속·후진<br>A/D 또는 ←/→: 조향<br>마우스 드래그: 카메라 회전<br>휠: 확대·축소<br>C: 추적/자유 카메라</div>
+<div id="help">W/S 또는 ↑/↓: 가속·후진<br>A/D 또는 ←/→: 조향<br><br>마우스 드래그: 카메라 회전<br>휠: 확대·축소<br>C: 추적/자유 카메라</div>
 <div id="buttons"><button id="left">◀</button><button id="forward">▲</button><button id="back">▼</button><button id="right">▶</button></div>
 <button id="camBtn">카메라 전환 (C)</button>
 <div id="markers-container"></div>
@@ -506,22 +506,18 @@ scene.add(new THREE.HemisphereLight(0xffffff,0x777777,2.0));
 const sun=new THREE.DirectionalLight(0xffffff,1.25);
 sun.position.set(300,500,250);scene.add(sun);
 
-// 도로는 무엇보다 최상단에 위치하도록 renderOrder 및 depthTest 설정
-const material=(color, renderOrder=0)=>new THREE.MeshLambertMaterial({
-  color, 
-  side: THREE.DoubleSide,
-  depthTest: renderOrder === 0
-});
+// 완전한 불투명 재질 사용 (투명함 현상 완전 해결)
+const material=(color)=>new THREE.MeshLambertMaterial({color,side:THREE.DoubleSide});
 
-const groundMat=material(0x7fa27f, 0); 
-const roadMat=material(0x343638, 5); // 도로는 최우선 렌더링 (depthTest 무시로 묻힘 방지)
-const bridgeMat=material(0x42464a, 4);
-const pierMat=material(0x808588, 2); // 교각 및 받침대 색상
-const tunnelPortalMat=material(0x1a1a1a, 3);
-const markingMat=material(0xd8d6c9, 6);
-const treeMat=material(0x3e5e3b, 1); 
-const trunkMat=material(0x5c4938, 1);
-const buildingMat=material(0x9098a0, 1);
+const groundMat=material(0x7fa27f); 
+const roadMat=material(0x343638);
+const bridgeMat=material(0x42464a);
+const pierMat=material(0x808588);
+const tunnelPortalMat=material(0x1a1a1a);
+const markingMat=material(0xd8d6c9);
+const treeMat=material(0x3e5e3b); 
+const trunkMat=material(0x5c4938);
+const buildingMat=material(0x9098a0);
 
 function getTerrainHeightAt(x, z){
   const pts = DATA.terrain_points;
@@ -579,7 +575,6 @@ function isNearOtherRoad(x, z, currentRoadIndex) {
   return false;
 }
 
-// 다리 아래 회색 받침대와 바닥을 이어주는 기둥(교각) 생성
 function addBridgeSupports(a, b, width, yA, yB) {
   const dx = b[0] - a[0], dz = b[1] - a[1], len = Math.hypot(dx, dz);
   if (len < 4.0) return;
@@ -590,15 +585,13 @@ function addBridgeSupports(a, b, width, yA, yB) {
   const terrainY = getTerrainHeightAt(midX, midZ);
 
   if (roadY - terrainY > 1.2) {
-    // 1. 상판 아래 회색 받침대 (Cap)
     const capGeo = new THREE.BoxGeometry(width + 0.4, 0.4, 1.2);
     const cap = new THREE.Mesh(capGeo, pierMat);
     cap.position.set(midX, roadY - 0.25, midZ);
     cap.rotation.y = Math.atan2(dx, dz);
-    cap.renderOrder = 3;
+    cap.renderOrder = 2;
     scene.add(cap);
 
-    // 2. 바닥과 연결되는 기둥 (Piers)
     const pillarHeight = roadY - terrainY;
     const pillarGeo = new THREE.CylinderGeometry(0.5, 0.6, pillarHeight, 8);
     const pillar = new THREE.Mesh(pillarGeo, pierMat);
@@ -609,28 +602,28 @@ function addBridgeSupports(a, b, width, yA, yB) {
 }
 
 function addRoadBarriers(a, b, width, yA, yB, rIdx, isBridge, isTunnel) {
-  if (isTunnel || isBridge) return; // 다리나 터널은 별도 안전장치 적용
+  if (isTunnel || isBridge) return;
   const dx=b[0]-a[0], dz=b[1]-a[1], len=Math.hypot(dx,dz);
   if(len<.05)return;
   const nx=-dz/len, nz=dx/len, half=width/2;
 
   const leftMid = [(a[0]+b[0])/2 - nx*half, (a[1]+b[1])/2 - nz*half];
   if (!isNearOtherRoad(leftMid[0], leftMid[1], rIdx)) {
-    const barrier = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.4, len), material(0x777b7e, 5));
+    const barrier = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.4, len), material(0x777b7e));
     barrier.position.set(leftMid[0], (yA+yB)/2 + 0.2, leftMid[1]);
     barrier.rotation.y = Math.atan2(dx, dz);
     barrier.rotation.x = Math.atan2(yB - yA, len);
-    barrier.renderOrder = 5;
+    barrier.renderOrder = 3;
     scene.add(barrier);
   }
 
   const rightMid = [(a[0]+b[0])/2 + nx*half, (a[1]+b[1])/2 + nz*half];
   if (!isNearOtherRoad(rightMid[0], rightMid[1], rIdx)) {
-    const barrier = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.4, len), material(0x777b7e, 5));
+    const barrier = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.4, len), material(0x777b7e));
     barrier.position.set(rightMid[0], (yA+yB)/2 + 0.2, rightMid[1]);
     barrier.rotation.y = Math.atan2(dx, dz);
     barrier.rotation.x = Math.atan2(yB - yA, len);
-    barrier.renderOrder = 5;
+    barrier.renderOrder = 3;
     scene.add(barrier);
   }
 }
@@ -650,7 +643,7 @@ function addTunnelPortal(x, z, y, width, dx, dz) {
 
   portalGroup.position.set(x, y, z);
   portalGroup.rotation.y = Math.atan2(dx, dz);
-  portalGroup.renderOrder = 4;
+  portalGroup.renderOrder = 3;
   scene.add(portalGroup);
 }
 
@@ -670,7 +663,12 @@ function roadQuadSloped(a, b, width, mat, yA, yB, rIdx, isBridge, isTunnel){
   geo.setAttribute("position",new THREE.BufferAttribute(vertices,3));
   geo.computeVertexNormals();
   const mesh=new THREE.Mesh(geo, isTunnel ? tunnelPortalMat : mat);
-  mesh.renderOrder = 5; // 도로는 항상 최상단 렌더링
+  
+  // polygonOffset을 적용하여 지형과 겹쳐도 도면이 항상 최상위에 깔끔하게 표시되도록 설정
+  mesh.material.polygonOffset = true;
+  mesh.material.polygonOffsetFactor = -1.0;
+  mesh.material.polygonOffsetUnits = -4.0;
+  mesh.renderOrder = 3;
   scene.add(mesh);
 
   if (isBridge) {
@@ -698,7 +696,10 @@ function lineSegmentSloped(a, b, width, color, yA, yB){
   g.setAttribute("position",new THREE.BufferAttribute(v,3));
   g.computeVertexNormals();
   const mesh = new THREE.Mesh(g, color);
-  mesh.renderOrder = 6; // 중앙선은 도로 바로 위에 렌더링
+  mesh.material.polygonOffset = true;
+  mesh.material.polygonOffsetFactor = -2.0;
+  mesh.material.polygonOffsetUnits = -8.0;
+  mesh.renderOrder = 4;
   scene.add(mesh);
 }
 
@@ -716,8 +717,8 @@ function addRoadMarkings(points, width, highway, isBridge, isTunnel, totalLen){
       const end=Math.min(t+dashLen, len-1);
       const terrainA = a.length > 2 ? a[2] : getTerrainHeightAt(a[0], a[1]);
       const terrainB = b.length > 2 ? b[2] : getTerrainHeightAt(b[0], b[1]);
-      const yA = getRoadHeightAtDist(segStartDist + t, totalLen, isBridge, isTunnel, terrainA, terrainB, t/len) + 0.05;
-      const yB = getRoadHeightAtDist(segStartDist + end, totalLen, isBridge, isTunnel, terrainA, terrainB, end/len) + 0.05;
+      const yA = getRoadHeightAtDist(segStartDist + t, totalLen, isBridge, isTunnel, terrainA, terrainB, t/len) + 0.08;
+      const yB = getRoadHeightAtDist(segStartDist + end, totalLen, isBridge, isTunnel, terrainA, terrainB, end/len) + 0.08;
       lineSegmentSloped([a[0]+ux*t, a[1]+uz*t], [a[0]+ux*end, a[1]+uz*end], 0.15, markingMat, yA, yB);
     }
   }
@@ -734,7 +735,7 @@ function drawBuilding(points, height, cy){
   geometry.rotateX(-Math.PI/2);
   const mesh=new THREE.Mesh(geometry, buildingMat);
   mesh.position.y = cy !== undefined ? cy : 0;
-  mesh.renderOrder = 1;
+  mesh.renderOrder = 2;
   scene.add(mesh);
 
   if(cy > 0.5) {
@@ -742,7 +743,7 @@ function drawBuilding(points, height, cy){
     baseGeometry.rotateX(-Math.PI/2);
     const baseMesh = new THREE.Mesh(baseGeometry, groundMat);
     baseMesh.position.y = 0;
-    baseMesh.renderOrder = 0;
+    baseMesh.renderOrder = 1;
     scene.add(baseMesh);
   }
 
@@ -754,9 +755,9 @@ function drawBuilding(points, height, cy){
 function addTree(x, z, y){
   const scale = 2.2;
   const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.3*scale,.4*scale,2.5*scale,6),trunkMat);
-  trunk.position.set(x, y + 1.25*scale, z); trunk.renderOrder=1; scene.add(trunk);
+  trunk.position.set(x, y + 1.25*scale, z); trunk.renderOrder=2; scene.add(trunk);
   const crown=new THREE.Mesh(new THREE.ConeGeometry(1.5*scale, 3.5*scale, 6),treeMat);
-  crown.position.set(x, y + 3.2*scale, z); crown.renderOrder=1; scene.add(crown);
+  crown.position.set(x, y + 3.2*scale, z); crown.renderOrder=2; scene.add(crown);
   lodObjects.push({mesh:trunk,x,z,type:"tree"},{mesh:crown,x,z,type:"tree"});
 }
 
@@ -764,12 +765,12 @@ function getRoadHeightAtDist(dist, totalLen, isBridge, isTunnel, terrainA=0, ter
   const tTerrain = segmentT===null ? (totalLen>0?Math.max(0,Math.min(1,dist/totalLen)):0) : Math.max(0,Math.min(1,segmentT));
   const terrainY = terrainA + (terrainB-terrainA) * tTerrain;
   if(isTunnel) return terrainY - 0.5;
-  if(!isBridge || totalLen <= 0) return terrainY + 0.05; // 지형 고도보다 살짝 위로 올려 묻힘 방지
+  if(!isBridge || totalLen <= 0) return terrainY + 0.1;
   const rampLen = Math.min(15, totalLen * 0.25);
   if(dist < rampLen){
-    return terrainY + 0.05 + (1.8 - 0.05) * (dist / rampLen);
+    return terrainY + 0.1 + (1.8 - 0.1) * (dist / rampLen);
   } else if(dist > totalLen - rampLen){
-    return terrainY + 0.05 + (1.8 - 0.05) * ((totalLen - dist) / rampLen);
+    return terrainY + 0.1 + (1.8 - 0.1) * ((totalLen - dist) / rampLen);
   } else {
     return terrainY + 1.8;
   }
@@ -840,21 +841,21 @@ for(const b of DATA.buildings) {
 }
 
 const car=new THREE.Group();scene.add(car);
-const carPaint=material(0xb83b3b, 5),glass=material(0x5e747e, 5),tireMat=material(0x202020, 5),rimMat=material(0x96999b, 5);
+const carPaint=material(0xb83b3b),glass=material(0x5e747e),tireMat=material(0x202020),rimMat=material(0x96999b);
 const body=new THREE.Mesh(new THREE.BoxGeometry(1.82,.62,4.45),carPaint);
-body.position.y=.68; body.renderOrder=7; car.add(body);
+body.position.y=.68; body.renderOrder=5; car.add(body);
 const hood=new THREE.Mesh(new THREE.BoxGeometry(1.72,.22,1.0),carPaint);
-hood.position.set(0,.98,1.35); hood.renderOrder=7; car.add(hood);
+hood.position.set(0,.98,1.35); hood.renderOrder=5; car.add(hood);
 const cabin=new THREE.Mesh(new THREE.BoxGeometry(1.48,.62,1.85),glass);
-cabin.position.set(0,1.22,-.35); cabin.renderOrder=7; car.add(cabin);
+cabin.position.set(0,1.22,-.35); cabin.renderOrder=5; car.add(cabin);
 const roof=new THREE.Mesh(new THREE.BoxGeometry(1.35,.12,1.25),carPaint);
-roof.position.set(0,1.57,-.35); roof.renderOrder=7; car.add(roof);
+roof.position.set(0,1.57,-.35); roof.renderOrder=5; car.add(roof);
 const wheels=[];
 for(const x of [-.94,.94])for(const z of [-1.42,1.42]){
   const wheel=new THREE.Mesh(new THREE.CylinderGeometry(.34,.34,.22,12),tireMat);
-  wheel.rotation.z=Math.PI/2; wheel.position.set(x,.36,z); wheel.renderOrder=7; car.add(wheel); wheels.push(wheel);
+  wheel.rotation.z=Math.PI/2; wheel.position.set(x,.36,z); wheel.renderOrder=5; car.add(wheel); wheels.push(wheel);
   const rim=new THREE.Mesh(new THREE.CylinderGeometry(.19,.19,.235,10),rimMat);
-  rim.rotation.z=Math.PI/2; rim.position.set(x,.36,z); rim.renderOrder=7; car.add(rim);
+  rim.rotation.z=Math.PI/2; rim.position.set(x,.36,z); rim.renderOrder=5; car.add(rim);
 }
 
 function pointInPolygon(x,z,poly){
@@ -894,7 +895,7 @@ function buildingCollision(x,z,yaw){
 }
 
 function getCarHeight(x, z){
-  let bestDist=Infinity, bestHeight=getTerrainHeightAt(x, z)+0.05;
+  let bestDist=Infinity, bestHeight=getTerrainHeightAt(x, z)+0.1;
   for(const r of DATA.roads){
     const pts=r.points;
     let totalLen=0, segLengths=[];
@@ -914,7 +915,7 @@ function getCarHeight(x, z){
         const terrain=terrainA+(terrainB-terrainA)*t;
         const bridgeExtra=r.bridge?getRoadHeightAtDist(accum+t*len,totalLen,true,r.tunnel,terrainA,terrainB,t)-terrain:0;
         const tunnelExtra=r.tunnel?getRoadHeightAtDist(accum+t*len,totalLen,false,r.tunnel,terrainA,terrainB,t)-terrain:0;
-        bestHeight=terrain+bridgeExtra+tunnelExtra+0.05;
+        bestHeight=terrain+bridgeExtra+tunnelExtra+0.1;
         bestDist=d;
       }
       accum+=len;

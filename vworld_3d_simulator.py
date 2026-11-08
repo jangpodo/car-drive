@@ -39,7 +39,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/34.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/35.0"},
         timeout=(5, 15)
     )
     response.raise_for_status()
@@ -76,7 +76,7 @@ def get_osm(lat, lon, radius_m):
     ]
     errors = []
     headers = {
-        "User-Agent": "Student3DDrivingSimulator/34.0",
+        "User-Agent": "Student3DDrivingSimulator/35.0",
         "Accept": "application/json",
     }
 
@@ -122,7 +122,7 @@ def query_elevation_batch(locations):
         response = requests.get(
             url,
             params={"locations": location_string, "interpolation": "bilinear"},
-            headers={"User-Agent": "Student3DDrivingSimulator/34.0"},
+            headers={"User-Agent": "Student3DDrivingSimulator/35.0"},
             timeout=20
         )
         response.raise_for_status()
@@ -216,7 +216,6 @@ def add_terrain_elevation(osm, center_lat, center_lon, max_samples=120):
                 p["_elevation"] = left[1] + (right[1]-left[1])*t
 
     valid = [e for vals in by_road.values() for _, e in vals]
-    # 가장 고도가 낮은 곳을 기준(0)으로 설정
     min_elev = min(valid) if valid else 0.0
 
     return osm, float(min_elev), f"SRTM 30m 표본 {len(coords)}개 (최저점 기준 적용)"
@@ -296,7 +295,6 @@ def convert_osm(osm, center_lat, center_lon, base_elevation=0.0):
             x = (float(point["lon"]) - center_lon) * meters_lon
             z = -(float(point["lat"]) - center_lat) * meters_lat
             raw_elev = point.get("_elevation")
-            # 최저점(base_elevation)을 기준으로 한 상대 고도 계산 (최저점 = 0)
             local_y = (float(raw_elev) - float(base_elevation)) if raw_elev is not None else 0.0
             points.append([x, z, local_y])
 
@@ -482,7 +480,6 @@ const treeMat=material(0x3e5e3b);
 const trunkMat=material(0x5c4938);
 const buildingMat = material(0x9098a0);
 
-// 최저점(0)을 기준으로 한 바닥 기준점
 const ground=new THREE.Mesh(new THREE.PlaneGeometry(20000,20000),groundMat);
 ground.rotation.x=-Math.PI/2;
 ground.position.y = -0.35;
@@ -512,7 +509,6 @@ function isNearOtherRoad(x, z, currentRoadIndex) {
   return false;
 }
 
-// 각 도로 세그먼트마다 고도에 맞춘 로컬 지형 및 지지대 생성
 function roadLocalGroundAndSkirt(a, b, width, yA, yB) {
   const dx=b[0]-a[0], dz=b[1]-a[1], len=Math.hypot(dx,dz);
   if(len<.05)return;
@@ -643,17 +639,31 @@ function addRoadMarkings(points, width, highway, isBridge, totalLen){
   }
 }
 
+// 건물 하단에 지형 기단(Foundation/Skirt)을 생성하여 공중에 떠 있지 않도록 보완
 function drawBuilding(points, height, cy){
   if(points.length<3)return;
   const shape=new THREE.Shape();
   shape.moveTo(points[0][0],-points[0][1]);
   for(let i=1;i<points.length;i++)shape.lineTo(points[i][0],-points[i][1]);
   shape.closePath();
+  
+  // 1. 건물 본체
   const geometry=new THREE.ExtrudeGeometry(shape,{depth:height,bevelEnabled:false});
   geometry.rotateX(-Math.PI/2);
   const mesh=new THREE.Mesh(geometry, buildingMat);
   mesh.position.y = cy !== undefined ? cy : 0;
   scene.add(mesh);
+
+  // 2. 건물 아래를 땅(0)까지 든든하게 받쳐주는 초록색 기단(Foundation Skirt) 생성
+  const baseDepth = cy;
+  if(baseDepth > 0.1) {
+    const baseGeometry = new THREE.ExtrudeGeometry(shape, {depth: baseDepth, bevelEnabled: false});
+    baseGeometry.rotateX(-Math.PI/2);
+    const baseMesh = new THREE.Mesh(baseGeometry, groundMat);
+    baseMesh.position.y = 0;
+    scene.add(baseMesh);
+  }
+
   const cx=points.reduce((s,p)=>s+p[0],0)/points.length;
   const cz=points.reduce((s,p)=>s+p[1],0)/points.length;
   lodObjects.push({mesh, x:cx, z:cz, type:"building"});

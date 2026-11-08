@@ -39,7 +39,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/30.0 (educational project)"},
+        headers={"User-Agent": "Student3DDrivingSimulator/31.0 (educational project)"},
         timeout=(5, 15)
     )
     response.raise_for_status()
@@ -78,7 +78,7 @@ def get_osm(lat, lon, radius_m):
     ]
     errors = []
     headers = {
-        "User-Agent": "Student3DDrivingSimulator/30.0 (educational project)",
+        "User-Agent": "Student3DDrivingSimulator/31.0 (educational project)",
         "Accept": "application/json",
     }
 
@@ -124,7 +124,7 @@ def query_elevation_batch(locations):
         response = requests.get(
             url,
             params={"locations": location_string, "interpolation": "bilinear"},
-            headers={"User-Agent": "Student3DDrivingSimulator/30.0"},
+            headers={"User-Agent": "Student3DDrivingSimulator/31.0"},
             timeout=30
         )
         response.raise_for_status()
@@ -332,6 +332,7 @@ def convert_osm(osm, center_lat, center_lon, center_elevation=0.0):
             
             cx = sum(p[0] for p in points) / len(points)
             cz = sum(p[1] for p in points) / len(points)
+            cy = sum(p[2] for p in points) / len(points)
             
             landmark_name, pin_color = get_category_and_color(tags)
 
@@ -341,7 +342,8 @@ def convert_osm(osm, center_lat, center_lon, center_elevation=0.0):
                 "name": landmark_name if landmark_name else "",
                 "color": pin_color if pin_color else "",
                 "cx": cx,
-                "cz": cz
+                "cz": cz,
+                "cy": cy
             })
 
         elif "waterway" in tags or "natural" in tags:
@@ -499,9 +501,19 @@ buildingTexture.wrapT = THREE.RepeatWrapping;
 buildingTexture.repeat.set(1, 3);
 const buildingMat = new THREE.MeshLambertMaterial({ map: buildingTexture });
 
+// 지형 고도에 맞춘 스마트 초록 바닥 생성 (도로 평균 고도 기반 연동)
+let avgTerrainY = 0;
+let terrainCount = 0;
+for(const r of DATA.roads){
+  for(const p of r.points){
+    if(p.length > 2){ avgTerrainY += p[2]; terrainCount++; }
+  }
+}
+if(terrainCount > 0) avgTerrainY /= terrainCount;
+
 const ground=new THREE.Mesh(new THREE.PlaneGeometry(20000,20000),groundMat);
 ground.rotation.x=-Math.PI/2;
-ground.position.y=-0.15;
+ground.position.y = avgTerrainY - 0.35;
 scene.add(ground);
 
 function addSceneryDetails(){
@@ -509,13 +521,12 @@ function addSceneryDetails(){
     let rx = (Math.random() - 0.5) * 1200;
     let rz = (Math.random() - 0.5) * 1200;
     const grass = new THREE.Mesh(new THREE.DodecahedronGeometry(0.8), grassMat);
-    grass.position.set(rx, 0, rz);
+    grass.position.set(rx, avgTerrainY, rz);
     scene.add(grass);
   }
 }
 addSceneryDetails();
 
-// 다른 도로와 2m 이내에 있는지 검사하는 함수 (교차로/연결부 방호벽 생략용)
 function isNearOtherRoad(x, z, currentRoadIndex) {
   for (let rIdx = 0; rIdx < DATA.roads.length; rIdx++) {
     if (rIdx === currentRoadIndex) continue;
@@ -529,14 +540,12 @@ function isNearOtherRoad(x, z, currentRoadIndex) {
   return false;
 }
 
-// 도로 하단 초록색 지지대(Skirt) 생성 함수
 function roadSkirt(a, b, width, yA, yB) {
   const dx=b[0]-a[0], dz=b[1]-a[1], len=Math.hypot(dx,dz);
   if(len<.05)return;
   const nx=-dz/len, nz=dx/len, half=width/2;
-  const baseDrop = -1.2;
+  const baseDrop = avgTerrainY - 1.5;
 
-  // 왼쪽 지지대
   const l1 = [a[0]-nx*half, a[1]-nz*half];
   const l2 = [b[0]-nx*half, b[1]-nz*half];
   const vertsL = new Float32Array([
@@ -548,7 +557,6 @@ function roadSkirt(a, b, width, yA, yB) {
   geoL.computeVertexNormals();
   scene.add(new THREE.Mesh(geoL, groundMat));
 
-  // 오른쪽 지지대
   const r1 = [a[0]+nx*half, a[1]+nz*half];
   const r2 = [b[0]+nx*half, b[1]+nz*half];
   const vertsR = new Float32Array([
@@ -561,13 +569,11 @@ function roadSkirt(a, b, width, yA, yB) {
   scene.add(new THREE.Mesh(geoR, groundMat));
 }
 
-// 도로 가장자리 얇은 회색 방호벽 생성 함수 (2m 이내 다른 도로가 있으면 미설치)
 function addRoadBarriers(a, b, width, yA, yB, rIdx) {
   const dx=b[0]-a[0], dz=b[1]-a[1], len=Math.hypot(dx,dz);
   if(len<.05)return;
   const nx=-dz/len, nz=dx/len, half=width/2;
 
-  // 왼쪽 방호벽
   const leftMid = [(a[0]+b[0])/2 - nx*half, (a[1]+b[1])/2 - nz*half];
   if (!isNearOtherRoad(leftMid[0], leftMid[1], rIdx) && !isNearOtherRoad(a[0], a[1], rIdx) && !isNearOtherRoad(b[0], b[1], rIdx)) {
     const barrier = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.35, len), material(0x777b7e));
@@ -577,7 +583,6 @@ function addRoadBarriers(a, b, width, yA, yB, rIdx) {
     scene.add(barrier);
   }
 
-  // 오른쪽 방호벽
   const rightMid = [(a[0]+b[0])/2 + nx*half, (a[1]+b[1])/2 + nz*half];
   if (!isNearOtherRoad(rightMid[0], rightMid[1], rIdx) && !isNearOtherRoad(a[0], a[1], rIdx) && !isNearOtherRoad(b[0], b[1], rIdx)) {
     const barrier = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.35, len), material(0x777b7e));
@@ -606,7 +611,6 @@ function roadQuadSloped(a, b, width, mat, yA, yB, rIdx){
   const mesh=new THREE.Mesh(geo,mat);
   scene.add(mesh);
   
-  // 도로 하단 초록 지지대 및 방호벽 설치
   roadSkirt(a, b, width, yA, yB);
   addRoadBarriers(a, b, width, yA, yB, rIdx);
 
@@ -654,7 +658,8 @@ function addRoadMarkings(points, width, highway, isBridge, totalLen){
   }
 }
 
-function drawBuilding(points,height){
+// 고도(cy)에 맞추어 건물이 지형 위에 바로 서도록 위치 조정
+function drawBuilding(points, height, cy){
   if(points.length<3)return;
   const shape=new THREE.Shape();
   shape.moveTo(points[0][0],-points[0][1]);
@@ -663,19 +668,19 @@ function drawBuilding(points,height){
   const geometry=new THREE.ExtrudeGeometry(shape,{depth:height,bevelEnabled:false});
   geometry.rotateX(-Math.PI/2);
   const mesh=new THREE.Mesh(geometry,buildingMat);
-  mesh.position.y=0;
+  mesh.position.y = cy !== undefined ? cy : 0;
   scene.add(mesh);
   const cx=points.reduce((s,p)=>s+p[0],0)/points.length;
   const cz=points.reduce((s,p)=>s+p[1],0)/points.length;
   lodObjects.push({mesh, x:cx, z:cz, type:"building"});
 }
 
-function addTree(x,z){
+function addTree(x, z, y){
   const scale = 2.2;
   const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.3*scale,.4*scale,2.5*scale,6),trunkMat);
-  trunk.position.set(x, 1.25*scale, z);scene.add(trunk);
+  trunk.position.set(x, y + 1.25*scale, z);scene.add(trunk);
   const crown=new THREE.Mesh(new THREE.ConeGeometry(1.5*scale, 3.5*scale, 6),treeMat);
-  crown.position.set(x, 3.2*scale, z);scene.add(crown);
+  crown.position.set(x, y + 3.2*scale, z);scene.add(crown);
   lodObjects.push({mesh:trunk,x,z,type:"tree"},{mesh:crown,x,z,type:"tree"});
 }
 
@@ -746,8 +751,9 @@ for(let rIdx = 0; rIdx < DATA.roads.length; rIdx++){
       const nx=-dz/len,nz=dx/len;
       for(let t=25;t<len;t+=70){
         const x=a[0]+dx*t/len,z=a[1]+dz*t/len,off=r.width/2+5.0;
-        addTree(x+nx*off, z+nz*off);
-        addTree(x-nx*off, z-nz*off);
+        const treeY = a.length > 2 ? a[2] : 0;
+        addTree(x+nx*off, z+nz*off, treeY);
+        addTree(x-nx*off, z-nz*off, treeY);
       }
     }
   }
@@ -755,7 +761,7 @@ for(let rIdx = 0; rIdx < DATA.roads.length; rIdx++){
 
 const landmarkMarkers = [];
 for(const b of DATA.buildings) {
-  drawBuilding(b.points, b.height||10);
+  drawBuilding(b.points, b.height||10, b.cy || 0);
   if(b.name && b.name.trim() !== "") {
     const el = document.createElement('div');
     el.className = 'map-pin';
@@ -769,14 +775,14 @@ for(const b of DATA.buildings) {
     markersContainer.appendChild(el);
     landmarkMarkers.push({
       element: el,
-      position: new THREE.Vector3(b.cx, (b.height || 10) + 1.5, b.cz)
+      position: new THREE.Vector3(b.cx, (b.cy || 0) + (b.height || 10) + 1.5, b.cz)
     });
   }
 }
 
 for(const w of DATA.water){
   for(let i=0;i<w.points.length-1;i++){
-    roadQuadSloped(w.points[i], w.points[i+1], 12, waterMat, 0.02, 0.02, -1);
+    roadQuadSloped(w.points[i], w.points[i+1], 12, waterMat, avgTerrainY, avgTerrainY, -1);
   }
 }
 
@@ -835,7 +841,7 @@ function buildingCollision(x,z,yaw){
 }
 
 function getCarHeight(x, z){
-  let bestDist=Infinity, bestHeight=0.035;
+  let bestDist=Infinity, bestHeight=avgTerrainY+0.035;
   for(const r of DATA.roads){
     const pts=r.points;
     let totalLen=0, segLengths=[];
@@ -871,7 +877,7 @@ if(startRoad){
   start=[(a[0]+b[0])/2,(a[1]+b[1])/2];
   yaw=Math.atan2(b[0]-a[0],b[1]-a[1]);
 }
-car.position.set(start[0], 0.035, start[1]); car.rotation.y=yaw;
+car.position.set(start[0], getCarHeight(start[0], start[1]), start[1]); car.rotation.y=yaw;
 
 let velocity=0,steer=0;
 const keys={};

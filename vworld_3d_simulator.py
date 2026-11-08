@@ -39,7 +39,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/44.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/46.0"},
         timeout=(5, 15)
     )
     response.raise_for_status()
@@ -76,7 +76,7 @@ def get_osm(lat, lon, radius_m):
     ]
     errors = []
     headers = {
-        "User-Agent": "Student3DDrivingSimulator/44.0",
+        "User-Agent": "Student3DDrivingSimulator/46.0",
         "Accept": "application/json",
     }
 
@@ -122,7 +122,7 @@ def query_elevation_batch(locations):
         response = requests.get(
             url,
             params={"locations": location_string, "interpolation": "bilinear"},
-            headers={"User-Agent": "Student3DDrivingSimulator/44.0"},
+            headers={"User-Agent": "Student3DDrivingSimulator/46.0"},
             timeout=20
         )
         response.raise_for_status()
@@ -329,7 +329,6 @@ def convert_osm(osm, center_lat, center_lon, base_elevation=0.0, terrain_points=
                 local_y = float(raw_elev) - float(base_elevation)
             else:
                 local_y = get_terrain_height_at(x, z)
-            # 지형 바닥과 동일하게 -0.35 맞춤
             points.append([x, z, local_y])
 
         if "highway" in tags:
@@ -538,6 +537,7 @@ const markingMat=material(0xd8d6c9);
 const treeMat=material(0x3e5e3b); 
 const trunkMat=material(0x5c4938);
 const buildingMat=material(0x9098a0);
+const wallMat=material(0x6b705c); // 도로와 지형을 연결하는 옹벽/블록 재질
 
 function getTerrainHeightAt(x, z){
   const pts = DATA.terrain_points;
@@ -556,14 +556,13 @@ function getTerrainHeightAt(x, z){
   return totalW > 0 ? sumH / totalW : 0.0;
 }
 
-// 지형 바닥 높이를 -0.35로 설정
 const groundGeo = new THREE.PlaneGeometry(3500, 3500, 70, 70);
 groundGeo.rotateX(-Math.PI / 2);
 const posAttr = groundGeo.attributes.position;
 for(let i=0; i<posAttr.count; i++){
   const vx = posAttr.getX(i);
   const vz = posAttr.getZ(i);
-  posAttr.setY(i, getTerrainHeightAt(vx, vz) - 0.35);
+  posAttr.setY(i, getTerrainHeightAt(vx, vz));
 }
 groundGeo.computeVertexNormals();
 const ground = new THREE.Mesh(groundGeo, groundMat);
@@ -574,7 +573,7 @@ function addSceneryDetails(){
   for(let i=0; i<80; i++){
     let rx = (Math.random() - 0.5) * 1000;
     let rz = (Math.random() - 0.5) * 1000;
-    const y = getTerrainHeightAt(rx, rz) - 0.35 + 0.01;
+    const y = getTerrainHeightAt(rx, rz);
     const grass = new THREE.Mesh(new THREE.DodecahedronGeometry(0.8), groundMat);
     grass.position.set(rx, y, rz);
     grass.castShadow = true;
@@ -597,6 +596,29 @@ function isNearOtherRoad(x, z, currentRoadIndex) {
   return false;
 }
 
+// 도로와 지형 사이에 공중 뜸 현상을 메워주는 흙막이/측면 블록(Wall) 생성 함수
+function addRoadSideFillers(a, b, width, yA, yB) {
+  const dx = b[0] - a[0], dz = b[1] - a[1], len = Math.hypot(dx, dz);
+  if (len < 0.05) return;
+  const midX = (a[0] + b[0]) / 2;
+  const midZ = (a[1] + b[1]) / 2;
+  const roadY = (yA + yB) / 2;
+  const terrainY = getTerrainHeightAt(midX, midZ);
+
+  // 도로가 지형보다 확실히 떠 있을 때 아래 공간을 메워주는 블록 생성
+  const gap = roadY - terrainY;
+  if (gap > 0.1) {
+    const wallGeo = new THREE.BoxGeometry(width, gap, len);
+    const wall = new THREE.Mesh(wallGeo, wallMat);
+    wall.position.set(midX, terrainY + gap / 2, midZ);
+    wall.rotation.y = Math.atan2(dx, dz);
+    wall.rotation.x = Math.atan2(yB - yA, len);
+    wall.castShadow = true;
+    wall.receiveShadow = true;
+    scene.add(wall);
+  }
+}
+
 function addBridgeSupports(a, b, width, yA, yB) {
   const dx = b[0] - a[0], dz = b[1] - a[1], len = Math.hypot(dx, dz);
   if (len < 4.0) return;
@@ -604,7 +626,7 @@ function addBridgeSupports(a, b, width, yA, yB) {
   const midX = (a[0] + b[0]) / 2;
   const midZ = (a[1] + b[1]) / 2;
   const roadY = (yA + yB) / 2;
-  const terrainY = getTerrainHeightAt(midX, midZ) - 0.35;
+  const terrainY = getTerrainHeightAt(midX, midZ);
 
   if (roadY - terrainY > 1.2) {
     const capGeo = new THREE.BoxGeometry(width + 0.4, 0.4, 1.2);
@@ -694,6 +716,9 @@ function roadQuadSloped(a, b, width, mat, yA, yB, rIdx, isBridge, isTunnel){
 
   if (isBridge) {
     addBridgeSupports(a, b, width, yA, yB);
+  } else {
+    // 일반 도로 아래의 빈 공간을 바닥과 연결하는 채움 블록 설치
+    addRoadSideFillers(a, b, width, yA, yB);
   }
   addRoadBarriers(a, b, width, yA, yB, rIdx, isBridge, isTunnel);
 
@@ -751,7 +776,7 @@ function drawBuilding(points, height, cy){
   const geometry=new THREE.ExtrudeGeometry(shape,{depth:height,bevelEnabled:false});
   geometry.rotateX(-Math.PI/2);
   const mesh=new THREE.Mesh(geometry, buildingMat);
-  mesh.position.y = (cy !== undefined ? cy : 0) - 0.35;
+  mesh.position.y = cy !== undefined ? cy : 0;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   scene.add(mesh);
@@ -770,20 +795,19 @@ function addTree(x, z, y){
   lodObjects.push({mesh:trunk,x,z,type:"tree"},{mesh:crown,x,z,type:"tree"});
 }
 
-// 도로 높이: 지형 바닥(terrainY - 0.35)보다 정확히 0.01m 위로 설정
+// 도로 높이를 지형 고도와 100% 매칭하여 공중에 뜨는 현상 원천 차단
 function getRoadHeightAtDist(dist, totalLen, isBridge, isTunnel, terrainA=0, terrainB=0, segmentT=null){
   const tTerrain = segmentT===null ? (totalLen>0?Math.max(0,Math.min(1,dist/totalLen)):0) : Math.max(0,Math.min(1,segmentT));
-  const rawTerrainY = terrainA + (terrainB-terrainA) * tTerrain;
-  const greenFloorY = rawTerrainY - 0.35;
-  if(isTunnel) return greenFloorY - 0.5;
-  if(!isBridge || totalLen <= 0) return greenFloorY + 0.01; // 바닥보다 딱 0.01m 위
+  const terrainY = terrainA + (terrainB-terrainA) * tTerrain;
+  if(isTunnel) return terrainY - 0.5;
+  if(!isBridge || totalLen <= 0) return terrainY + 0.01; // 지형에 완전히 착 달라붙도록 0.01m만 밀착
   const rampLen = Math.min(15, totalLen * 0.25);
   if(dist < rampLen){
-    return greenFloorY + 0.01 + (1.8 * (dist / rampLen));
+    return terrainY + 0.01 + (1.8 * (dist / rampLen));
   } else if(dist > totalLen - rampLen){
-    return greenFloorY + 0.01 + (1.8 * ((totalLen - dist) / rampLen));
+    return terrainY + 0.01 + (1.8 * ((totalLen - dist) / rampLen));
   } else {
-    return greenFloorY + 0.01 + 1.8;
+    return terrainY + 0.01 + 1.8;
   }
 }
 
@@ -810,8 +834,8 @@ for(let rIdx = 0; rIdx < DATA.roads.length; rIdx++){
     roadQuadSloped(a, b, r.width, r.bridge?bridgeMat:roadMat, yA, yB, rIdx, r.bridge, r.tunnel);
 
     if(r.tunnel) {
-      if(i === 0) addTunnelPortal(a[0], a[1], terrainA - 0.35, r.width, b[0]-a[0], b[1]-a[1]);
-      if(i === pts.length - 2) addTunnelPortal(b[0], b[1], terrainB - 0.35, r.width, a[0]-b[0], a[1]-b[1]);
+      if(i === 0) addTunnelPortal(a[0], a[1], terrainA, r.width, b[0]-a[0], b[1]-a[1]);
+      if(i === pts.length - 2) addTunnelPortal(b[0], b[1], terrainB, r.width, a[0]-b[0], a[1]-b[1]);
     }
   }
   addRoadMarkings(pts, r.width, r.highway, r.bridge, r.tunnel, totalLen);
@@ -823,7 +847,7 @@ for(let rIdx = 0; rIdx < DATA.roads.length; rIdx++){
       const nx=-dz/len,nz=dx/len;
       for(let t=35;t<len;t+=90){
         const x=a[0]+dx*t/len,z=a[1]+dz*t/len,off=r.width/2+5.0;
-        const treeY = getTerrainHeightAt(x+nx*off, z+nz*off) - 0.35;
+        const treeY = getTerrainHeightAt(x+nx*off, z+nz*off);
         addTree(x+nx*off, z+nz*off, treeY);
       }
     }
@@ -846,7 +870,7 @@ for(const b of DATA.buildings) {
     markersContainer.appendChild(el);
     landmarkMarkers.push({
       element: el,
-      position: new THREE.Vector3(b.cx, (b.cy || 0) - 0.35 + (b.height || 10) + 1.5, b.cz)
+      position: new THREE.Vector3(b.cx, (b.cy || 0) + (b.height || 10) + 1.5, b.cz)
     });
   }
 }
@@ -906,7 +930,7 @@ function buildingCollision(x,z,yaw){
 }
 
 function getCarHeight(x, z){
-  let bestDist=Infinity, bestHeight=getTerrainHeightAt(x, z) - 0.35 + 0.01;
+  let bestDist=Infinity, bestHeight=getTerrainHeightAt(x, z) + 0.34;
   for(const r of DATA.roads){
     const pts=r.points;
     let totalLen=0, segLengths=[];
@@ -923,10 +947,8 @@ function getCarHeight(x, z){
         const vx=b[0]-a[0], vz=b[1]-a[1], l2=vx*vx+vz*vz;
         const t=l2?Math.max(0,Math.min(1,((x-a[0])*vx+(z-a[1])*vz)/l2)):0;
         const terrainA=a.length>2?a[2]:getTerrainHeightAt(a[0],a[1]), terrainB=b.length>2?b[2]:getTerrainHeightAt(b[0],b[1]);
-        const bridgeExtra=r.bridge?getRoadHeightAtDist(accum+t*len,totalLen,true,r.tunnel,terrainA,terrainB,t)-(terrainA-0.35):0;
-        const tunnelExtra=r.tunnel?getRoadHeightAtDist(accum+t*len,totalLen,false,r.tunnel,terrainA,terrainB,t)-(terrainA-0.35):0;
-        const rawT = terrainA + (terrainB-terrainA)*t;
-        bestHeight=(rawT - 0.35) + (r.bridge ? bridgeExtra : (r.tunnel ? tunnelExtra : 0.01));
+        const roadY = getRoadHeightAtDist(accum+t*len, totalLen, r.bridge, r.tunnel, terrainA, terrainB, t);
+        bestHeight = roadY + 0.34;
         bestDist=d;
       }
       accum+=len;

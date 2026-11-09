@@ -39,7 +39,7 @@ def geocode(q):
     response = requests.get(
         "https://nominatim.openstreetmap.org/search",
         params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/46.0"},
+        headers={"User-Agent": "Student3DDrivingSimulator/45.0"},
         timeout=(5, 15)
     )
     response.raise_for_status()
@@ -76,7 +76,7 @@ def get_osm(lat, lon, radius_m):
     ]
     errors = []
     headers = {
-        "User-Agent": "Student3DDrivingSimulator/46.0",
+        "User-Agent": "Student3DDrivingSimulator/45.0",
         "Accept": "application/json",
     }
 
@@ -122,7 +122,7 @@ def query_elevation_batch(locations):
         response = requests.get(
             url,
             params={"locations": location_string, "interpolation": "bilinear"},
-            headers={"User-Agent": "Student3DDrivingSimulator/46.0"},
+            headers={"User-Agent": "Student3DDrivingSimulator/45.0"},
             timeout=20
         )
         response.raise_for_status()
@@ -537,7 +537,6 @@ const markingMat=material(0xd8d6c9);
 const treeMat=material(0x3e5e3b); 
 const trunkMat=material(0x5c4938);
 const buildingMat=material(0x9098a0);
-const wallMat=material(0x6b705c); // 도로와 지형을 연결하는 옹벽/블록 재질
 
 function getTerrainHeightAt(x, z){
   const pts = DATA.terrain_points;
@@ -556,6 +555,7 @@ function getTerrainHeightAt(x, z){
   return totalW > 0 ? sumH / totalW : 0.0;
 }
 
+// 지형 바닥 높이 (단일 고도 시스템 적용)
 const groundGeo = new THREE.PlaneGeometry(3500, 3500, 70, 70);
 groundGeo.rotateX(-Math.PI / 2);
 const posAttr = groundGeo.attributes.position;
@@ -594,29 +594,6 @@ function isNearOtherRoad(x, z, currentRoadIndex) {
     }
   }
   return false;
-}
-
-// 도로와 지형 사이에 공중 뜸 현상을 메워주는 흙막이/측면 블록(Wall) 생성 함수
-function addRoadSideFillers(a, b, width, yA, yB) {
-  const dx = b[0] - a[0], dz = b[1] - a[1], len = Math.hypot(dx, dz);
-  if (len < 0.05) return;
-  const midX = (a[0] + b[0]) / 2;
-  const midZ = (a[1] + b[1]) / 2;
-  const roadY = (yA + yB) / 2;
-  const terrainY = getTerrainHeightAt(midX, midZ);
-
-  // 도로가 지형보다 확실히 떠 있을 때 아래 공간을 메워주는 블록 생성
-  const gap = roadY - terrainY;
-  if (gap > 0.1) {
-    const wallGeo = new THREE.BoxGeometry(width, gap, len);
-    const wall = new THREE.Mesh(wallGeo, wallMat);
-    wall.position.set(midX, terrainY + gap / 2, midZ);
-    wall.rotation.y = Math.atan2(dx, dz);
-    wall.rotation.x = Math.atan2(yB - yA, len);
-    wall.castShadow = true;
-    wall.receiveShadow = true;
-    scene.add(wall);
-  }
 }
 
 function addBridgeSupports(a, b, width, yA, yB) {
@@ -716,9 +693,6 @@ function roadQuadSloped(a, b, width, mat, yA, yB, rIdx, isBridge, isTunnel){
 
   if (isBridge) {
     addBridgeSupports(a, b, width, yA, yB);
-  } else {
-    // 일반 도로 아래의 빈 공간을 바닥과 연결하는 채움 블록 설치
-    addRoadSideFillers(a, b, width, yA, yB);
   }
   addRoadBarriers(a, b, width, yA, yB, rIdx, isBridge, isTunnel);
 
@@ -795,19 +769,19 @@ function addTree(x, z, y){
   lodObjects.push({mesh:trunk,x,z,type:"tree"},{mesh:crown,x,z,type:"tree"});
 }
 
-// 도로 높이를 지형 고도와 100% 매칭하여 공중에 뜨는 현상 원천 차단
+// 도로 높이: 지형 표면보다 정확히 0.05m 높여 묻힘 방지 및 밀착
 function getRoadHeightAtDist(dist, totalLen, isBridge, isTunnel, terrainA=0, terrainB=0, segmentT=null){
   const tTerrain = segmentT===null ? (totalLen>0?Math.max(0,Math.min(1,dist/totalLen)):0) : Math.max(0,Math.min(1,segmentT));
   const terrainY = terrainA + (terrainB-terrainA) * tTerrain;
   if(isTunnel) return terrainY - 0.5;
-  if(!isBridge || totalLen <= 0) return terrainY + 0.01; // 지형에 완전히 착 달라붙도록 0.01m만 밀착
+  if(!isBridge || totalLen <= 0) return terrainY + 0.05;
   const rampLen = Math.min(15, totalLen * 0.25);
   if(dist < rampLen){
-    return terrainY + 0.01 + (1.8 * (dist / rampLen));
+    return terrainY + 0.05 + (1.8 * (dist / rampLen));
   } else if(dist > totalLen - rampLen){
-    return terrainY + 0.01 + (1.8 * ((totalLen - dist) / rampLen));
+    return terrainY + 0.05 + (1.8 * ((totalLen - dist) / rampLen));
   } else {
-    return terrainY + 0.01 + 1.8;
+    return terrainY + 0.05 + 1.8;
   }
 }
 

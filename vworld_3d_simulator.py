@@ -1082,5 +1082,61 @@ window.addEventListener("resize",()=>{
 </script></body></html>"""
     html = html.replace("__DATA__", json.dumps(data, ensure_ascii=False))
     components.html(html, height=780, scrolling=False)
+
+    # 3D 지도 화면 바깥쪽 아래에 표시되는 색상 범례
+    st.markdown(
+        """
+        <div style="
+            margin-top: 12px;
+            padding: 14px 16px;
+            border: 1px solid #d9dee5;
+            border-radius: 10px;
+            background: #f8fafc;
+            color: #263238;
+        ">
+          <div style="font-weight: 700; font-size: 15px; margin-bottom: 10px;">
+            지도 색상 안내
+          </div>
+          <div style="display: flex; flex-wrap: wrap; gap: 10px 20px; font-size: 13px;">
+            <span style="display:inline-flex;align-items:center;gap:7px;">
+              <i style="width:13px;height:13px;border-radius:50%;background:#ff9800;display:inline-block;"></i>
+              음식점·카페
+            </span>
+            <span style="display:inline-flex;align-items:center;gap:7px;">
+              <i style="width:13px;height:13px;border-radius:50%;background:#2196f3;display:inline-block;"></i>
+              편의점
+            </span>
+            <span style="display:inline-flex;align-items:center;gap:7px;">
+              <i style="width:13px;height:13px;border-radius:50%;background:#e53935;display:inline-block;"></i>
+              시장·마트·쇼핑시설
+            </span>
+            <span style="display:inline-flex;align-items:center;gap:7px;">
+              <i style="width:13px;height:13px;border-radius:50%;background:#4caf50;display:inline-block;"></i>
+              공원·문화유산·관광지
+            </span>
+            <span style="display:inline-flex;align-items:center;gap:7px;">
+              <i style="width:13px;height:13px;border-radius:50%;background:#9c27b0;display:inline-block;"></i>
+              관공서·도서관·박물관 등 주요시설
+            </span>
+            <span style="display:inline-flex;align-items:center;gap:7px;">
+              <i style="width:13px;height:13px;border-radius:3px;background:#343638;display:inline-block;"></i>
+              도로
+            </span>
+            <span style="display:inline-flex;align-items:center;gap:7px;">
+              <i style="width:13px;height:13px;border-radius:3px;background:#9098a0;display:inline-block;"></i>
+              건물
+            </span>
+            <span style="display:inline-flex;align-items:center;gap:7px;">
+              <i style="width:13px;height:13px;border-radius:3px;background:#3e5e3b;display:inline-block;"></i>
+              가로수
+            </span>
+          </div>
+          <div style="font-size:11px;color:#687782;margin-top:9px;">
+            ※ 색깔이 있는 핀은 지도 데이터에 이름과 분류 정보가 등록된 장소만 표시됩니다.
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 else:
     st.info("왼쪽 사이드바에서 도시/주소를 입력하고 ‘도시 불러오기’ 버튼을 눌러 주세요.")

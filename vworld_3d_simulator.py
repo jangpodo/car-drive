@@ -34,26 +34,110 @@ with st.sidebar:
     load = st.button("도시 불러오기", type="primary")
     st.caption("차량 크기: 약 4.5m × 1.8m (실제 승용차 비율)")
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=2592000, show_spinner=False)
 def geocode(q):
-    response = requests.get(
-        "https://nominatim.openstreetmap.org/search",
-        params={"q": q, "format": "json", "limit": 1},
-        headers={"User-Agent": "Student3DDrivingSimulator/45.0"},
-        timeout=(5, 15)
+    """
+    주소 검색:
+    1) 자주 사용하는 지역은 저장된 좌표 사용
+    2) Photon 검색
+    3) Photon 실패 시 Nominatim으로 한 번 대체 시도
+    결과는 30일간 캐시한다.
+    """
+    import re
+    query = re.sub(r"\\s+", " ", str(q)).strip()
+    if not query:
+        raise ValueError("도시나 주소를 입력해 주세요.")
+
+    # 추천 입력 예시와 자주 쓰는 지역은 외부 주소 검색 요청 없이 처리
+    known_places = {
+        "서울특별시 종로구": (37.5730, 126.9794),
+        "서울 종로구": (37.5730, 126.9794),
+        "서울특별시 강남구": (37.5172, 127.0473),
+        "서울 강남구": (37.5172, 127.0473),
+        "부산 해운대구": (35.1631, 129.1635),
+        "부산광역시 해운대구": (35.1631, 129.1635),
+        "수원시 팔달구": (37.2809, 127.0090),
+        "경기도 수원시 팔달구": (37.2809, 127.0090),
+        "성남시 분당구": (37.3825, 127.1189),
+        "강릉시 중앙동": (37.7520, 128.8759),
+        "춘천시": (37.8813, 127.7298),
+        "천안시 서북구": (36.8320, 127.1130),
+        "청주시 흥덕구": (36.6424, 127.4890),
+        "전주시 완산구": (35.8118, 127.1470),
+        "여수시": (34.7604, 127.6622),
+        "포항시 북구": (36.0389, 129.3650),
+        "경주시": (35.8562, 129.2247),
+    }
+    if query in known_places:
+        lat, lon = known_places[query]
+        return lat, lon, query + " (저장된 대표 위치)"
+
+    headers = {
+        "User-Agent": "Student3DDrivingSimulator/1.0 (educational mapping project)",
+        "Accept": "application/json",
+    }
+    errors = []
+
+    # Photon을 우선 사용해 Nominatim 요청이 한 곳에 몰리지 않도록 한다.
+    try:
+        response = requests.get(
+            "https://photon.komoot.io/api/",
+            params={"q": query, "limit": 1, "lang": "en"},
+            headers=headers,
+            timeout=(4, 9),
+        )
+        response.raise_for_status()
+        features = response.json().get("features", [])
+        if features:
+            feature = features[0]
+            coords = feature.get("geometry", {}).get("coordinates", [])
+            if len(coords) >= 2:
+                props = feature.get("properties", {})
+                label = ", ".join(
+                    str(props[k]) for k in ("name", "city", "state", "country")
+                    if props.get(k)
+                ) or query
+                return float(coords[1]), float(coords[0]), label
+        errors.append("Photon에서 검색 결과를 찾지 못함")
+    except requests.exceptions.RequestException as exc:
+        errors.append(f"Photon 검색 실패({type(exc).__name__})")
+    except (ValueError, TypeError, KeyError):
+        errors.append("Photon 응답을 읽을 수 없음")
+
+    # 대체 검색은 한 번만 시도한다. 429이면 재시도하지 않아 차단을 악화시키지 않는다.
+    try:
+        response = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": query, "format": "jsonv2", "limit": 1},
+            headers=headers,
+            timeout=(4, 9),
+        )
+        if response.status_code == 429:
+            raise RuntimeError("Nominatim 검색 요청이 일시적으로 제한됨(HTTP 429)")
+        response.raise_for_status()
+        items = response.json()
+        if items:
+            item = items[0]
+            return float(item["lat"]), float(item["lon"]), item.get("display_name", query)
+        errors.append("Nominatim에서 검색 결과를 찾지 못함")
+    except requests.exceptions.RequestException as exc:
+        errors.append(f"Nominatim 검색 실패({type(exc).__name__})")
+    except (ValueError, TypeError, KeyError) as exc:
+        errors.append(f"Nominatim 응답 처리 실패({type(exc).__name__})")
+    except RuntimeError as exc:
+        errors.append(str(exc))
+
+    raise RuntimeError(
+        "주소를 찾지 못했습니다. 잠시 후 다시 시도하거나 "
+        "예시 지역 이름(예: 서울특별시 종로구, 수원시 팔달구)을 입력해 주세요. "
+        + " / ".join(errors)
     )
-    response.raise_for_status()
-    items = response.json()
-    if not items:
-        raise ValueError("위치를 찾지 못했습니다. 도시명이나 주소를 더 구체적으로 입력해 주세요.")
-    item = items[0]
-    return float(item["lat"]), float(item["lon"]), item.get("display_name", q)
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def get_osm(lat, lon, radius_m):
     dlat = radius_m / 111320
     dlon = radius_m / (111320 * max(math.cos(math.radians(lat)), 0.2))
-    south, west, north, east = lat-dlat, lon-dlon, lat+dlat, lon+dlat
+    south, west, north, east = lat-dlat, lon-dlon, lat+dlat, lon+dlon
 
     query = f"""
     [out:json][timeout:20][maxsize:268435456];
